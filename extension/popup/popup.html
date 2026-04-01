@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flight MCP Bridge</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      width: 280px;
+      background: #0f1117;
+      color: #e2e8f0;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 12px;
+      padding: 16px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid #1e2530;
+      padding-bottom: 12px;
+    }
+
+    .header h1 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #f8fafc;
+      letter-spacing: 0.02em;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .status-label {
+      color: #94a3b8;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ef4444;
+      transition: background 0.3s;
+    }
+
+    .dot.connected {
+      background: #22c55e;
+      box-shadow: 0 0 6px #22c55e88;
+    }
+
+    .status-text {
+      font-size: 11px;
+      color: #64748b;
+    }
+
+    .status-text.connected { color: #22c55e; }
+
+    .endpoint {
+      background: #1a1f2e;
+      border: 1px solid #1e2530;
+      border-radius: 4px;
+      padding: 8px 10px;
+      margin-bottom: 14px;
+      font-size: 10px;
+      color: #64748b;
+      word-break: break-all;
+    }
+
+    .section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #475569;
+      margin-bottom: 6px;
+    }
+
+    .tools-list {
+      list-style: none;
+      margin-bottom: 14px;
+    }
+
+    .tools-list li {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 0;
+      font-size: 11px;
+      color: #94a3b8;
+      border-bottom: 1px solid #1a1f2e;
+    }
+
+    .tools-list li:last-child { border-bottom: none; }
+
+    .tool-icon {
+      color: #3b82f6;
+      font-size: 10px;
+    }
+
+    .tool-name { color: #60a5fa; }
+
+    .btn {
+      width: 100%;
+      padding: 7px 12px;
+      background: #1e2530;
+      border: 1px solid #2d3748;
+      border-radius: 4px;
+      color: #94a3b8;
+      font-family: inherit;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+      text-align: center;
+    }
+
+    .btn:hover {
+      background: #263040;
+      color: #e2e8f0;
+      border-color: #3b82f6;
+    }
+
+    .btn:active { transform: scale(0.98); }
+
+    .footer {
+      margin-top: 12px;
+      font-size: 10px;
+      color: #334155;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>✈ Flight MCP Bridge</h1>
+  </div>
+
+  <div class="status-row">
+    <span class="status-label">Bridge</span>
+    <div class="status-indicator">
+      <div class="dot" id="dot"></div>
+      <span class="status-text" id="statusText">Disconnected</span>
+    </div>
+  </div>
+
+  <div class="endpoint" id="endpoint">ws://127.0.0.1:9222</div>
+
+  <div class="section-title">MCP Tools</div>
+  <ul class="tools-list">
+    <li><span class="tool-icon">▸</span><span class="tool-name">search_ita</span></li>
+    <li><span class="tool-icon">▸</span><span class="tool-name">scrape_ita_results</span></li>
+    <li><span class="tool-icon">▸</span><span class="tool-name">search_flights</span></li>
+    <li><span class="tool-icon">▸</span><span class="tool-name">scrape_results</span></li>
+  </ul>
+
+  <button class="btn" id="reconnectBtn">Reconnect</button>
+
+  <div class="footer">SSE → http://0.0.0.0:3000/sse</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

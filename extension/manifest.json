@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Flight MCP Bridge",
+  "version": "1.0.0",
+  "description": "Connects Claude AI agents to Google Flights and ITA Matrix via a local MCP bridge",
+
+  "permissions": ["tabs", "activeTab", "scripting", "alarms"],
+  "host_permissions": [
+    "https://www.google.com/travel/flights*",
+    "https://matrix.itasoftware.com/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://www.google.com/travel/flights*"],
+      "js": ["content-gf.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://matrix.itasoftware.com/*"],
+      "js": ["content-ita.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Flight MCP Bridge"
+  }
+}
