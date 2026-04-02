@@ -58,6 +58,30 @@ const TOOLS = [
     name: 'scrape_results',
     description: 'Re-scrape current Google Flights results without navigating.',
     inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'search_ita_multicity',
+    description: 'Search ITA Matrix for multi-city itineraries (2–6 legs). Ideal for 外站票 (external-origin tickets) and open-jaw routes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        legs: {
+          type: 'array',
+          description: 'Ordered list of flight legs',
+          items: {
+            type: 'object',
+            properties: {
+              origin:      { type: 'string', description: 'IATA departure airport (e.g. NRT)' },
+              destination: { type: 'string', description: 'IATA arrival airport (e.g. TPE)' },
+              date:        { type: 'string', description: 'Departure date YYYY-MM-DD' }
+            },
+            required: ['origin', 'destination', 'date']
+          }
+        },
+        passengers: { type: 'integer', description: 'Number of passengers', default: 1 }
+      },
+      required: ['legs']
+    }
   }
 ];
 

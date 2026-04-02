@@ -184,7 +184,7 @@
     // Price
     let price = null;
     const priceEl = Array.from(card.querySelectorAll('*')).find(
-      (el) => el.childElementCount === 0 && /^\$[\d,]+$/.test(el.textContent.trim())
+      (el) => el.childElementCount === 0 && /^(?:NT\$|\$)[\d,]+$/.test(el.textContent.trim())
     );
     if (priceEl) {
       price = priceEl.textContent.trim();
@@ -244,10 +244,240 @@
     return { airline, departure_time, arrival_time, duration, stops, price, co2, route };
   }
 
+  // ─── Form Automation (Search) ─────────────────────────────────────────────
+
+  const nativeInputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+
+  // Type char-by-char: nativeInputSetter + full keyboard event chain
+  async function typeIntoGF(el, text) {
+    el.click();
+    await sleep(400);
+    el.focus();
+    await sleep(300);
+
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+
+    // Clear
+    setter?.call(el, '');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(100);
+
+    for (const char of text) {
+      const charCode = char.toUpperCase().charCodeAt(0);
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: char, keyCode: charCode, which: charCode, bubbles: true }));
+      setter?.call(el, el.value + char);
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
+      el.dispatchEvent(new KeyboardEvent('keyup',  { key: char, keyCode: charCode, which: charCode, bubbles: true }));
+      await sleep(150);
+    }
+  }
+
+  async function selectFirstGFSuggestion(timeoutMs = 5000) {
+    const start = Date.now();
+    const selectors = [
+      '[role="listbox"] [role="option"]',
+      '[role="option"]',
+      'li[data-value]',
+    ];
+    while (Date.now() - start < timeoutMs) {
+      for (const sel of selectors) {
+        const visible = Array.from(document.querySelectorAll(sel)).filter(el => el.offsetParent !== null);
+        if (visible.length > 0) {
+          visible[0].click();
+          await sleep(300);
+          return true;
+        }
+      }
+      await sleep(150);
+    }
+    // Fallback: ArrowDown + Enter
+    const active = document.activeElement;
+    if (active) {
+      active.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      await sleep(200);
+      active.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await sleep(300);
+    }
+    return false;
+  }
+
+  function findGFInput(patterns) {
+    for (const p of patterns) {
+      const el = document.querySelector(`input[aria-label*="${p}"], [aria-label*="${p}"] input`);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function toGFDate(isoDate) {
+    const [, m, d] = isoDate.split('-').map(Number);
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${months[m - 1]} ${d}`;
+  }
+
+  // Click a specific date in the GF calendar using the full ISO date string
+  async function clickCalendarDate(isoDate) {
+    // Strategy 1: data-iso exact match
+    let cell = document.querySelector(`[data-iso="${isoDate}"]`);
+    if (cell?.offsetParent) { (cell.querySelector('span') || cell).click(); await sleep(500); return true; }
+
+    // Strategy 2: aria-label containing the date string or "N日"
+    const day = parseInt(isoDate.split('-')[2], 10);
+    const month = parseInt(isoDate.split('-')[1], 10);
+    const candidates = Array.from(document.querySelectorAll(
+      '[role="gridcell"], [role="button"][data-iso], td[data-date], li[data-date]'
+    ));
+    for (const c of candidates) {
+      const label = c.getAttribute('aria-label') || c.getAttribute('data-date') || '';
+      const iso   = c.getAttribute('data-iso') || '';
+      if ((iso === isoDate) ||
+          (label.includes(isoDate)) ||
+          (label.includes(`${month}月`) && label.includes(`${day}日`))) {
+        if (c.offsetParent && !c.getAttribute('aria-disabled')) {
+          (c.querySelector('span') || c).click();
+          await sleep(500);
+          return true;
+        }
+      }
+    }
+
+    // Strategy 3: find gridcell whose visible text is exactly the day number
+    for (const c of Array.from(document.querySelectorAll('[role="gridcell"]'))) {
+      if (c.textContent.trim() === String(day) && c.offsetParent && !c.getAttribute('aria-disabled')) {
+        c.click();
+        await sleep(500);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async function search(params) {
+    const { origin, destination, departure_date, return_date } = params;
+    const isRoundTrip = !!return_date;
+    const steps = [];
+
+    // Step 1: Origin — aria-label="從哪裡出發？"
+    const originInput = findGFInput(['從哪裡出發', 'Where from', '出發地']) ||
+      Array.from(document.querySelectorAll('input[aria-label][type="text"]'))
+        .find(el => el.offsetParent !== null);
+    if (!originInput) {
+      return { status: 'error', error: 'Origin input not found', steps };
+    }
+    originInput.click();
+    await sleep(400);
+    await typeIntoGF(originInput, origin);
+    await sleep(1200);
+    const originOk = await selectFirstGFSuggestion(4000);
+    steps.push({ step: 'fill_origin', ok: originOk });
+    await sleep(600);
+
+    // Step 2: Destination — aria-label="要去哪裡？"
+    // After origin selection GF auto-focuses destination
+    let destInput = null;
+    const ae = document.activeElement;
+    const aeLabel = ae?.getAttribute?.('aria-label') || '';
+    if (ae && ae.tagName === 'INPUT' && !/從哪裡出發|where from/i.test(aeLabel)) {
+      destInput = ae;
+    }
+    if (!destInput) destInput = findGFInput(['要去哪裡', 'Where to', '目的地']);
+    if (!destInput) {
+      const labelled = Array.from(document.querySelectorAll('input[aria-label][type="text"]'))
+        .filter(el => el !== originInput && el.offsetParent !== null);
+      destInput = labelled[0] || null;
+    }
+    if (!destInput) return { status: 'error', error: 'Destination not found', steps };
+
+    if (destInput !== document.activeElement) destInput.click();
+    await sleep(400);
+    await typeIntoGF(destInput, destination);
+    await sleep(1200);
+    const destOk = await selectFirstGFSuggestion(4000);
+    steps.push({ step: 'fill_dest', ok: destOk });
+    await sleep(600);
+
+    // Step 3: Departure date — aria-label="去程" → click to open calendar, then click exact ISO date
+    const depInput = findGFInput(['去程', 'Departure', 'Start date']);
+    if (depInput) { depInput.click(); await sleep(1200); }
+    const depOk = await clickCalendarDate(departure_date);
+    steps.push({ step: 'fill_dep_date', date: departure_date, ok: depOk });
+    await sleep(600);
+
+    // Step 4: Return date — calendar usually stays open after dep selection
+    if (isRoundTrip && return_date) {
+      const calStillOpen = !!document.querySelector('[role="gridcell"]');
+      if (!calStillOpen) {
+        const retInput = findGFInput(['回程', 'Return', 'End date']);
+        if (retInput) { retInput.click(); await sleep(1000); }
+      }
+      const retOk = await clickCalendarDate(return_date);
+      steps.push({ step: 'fill_ret_date', date: return_date, ok: retOk });
+      await sleep(600);
+    }
+
+    // Step 5: Click "完成" to close calendar (GF shows this after both dates picked)
+    await sleep(300);
+    const doneBtn = Array.from(document.querySelectorAll('button')).find(
+      btn => btn.offsetParent !== null && /^完成$|^Done$/i.test(btn.textContent.trim())
+    );
+    if (doneBtn) {
+      steps.push({ step: 'close_calendar', text: doneBtn.textContent.trim() });
+      doneBtn.click();
+      await sleep(800);
+    } else {
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await sleep(500);
+    }
+
+    // Step 6: Find the main form's search button.
+    // Scope to the container that holds the origin input, to avoid clicking card buttons.
+    let searchContainer = originInput.closest('form, [role="search"]');
+    if (!searchContainer) {
+      // Walk up DOM to find a container that also contains the dep date input
+      let node = originInput.parentElement;
+      while (node && node !== document.body) {
+        if (depInput && node.contains(depInput)) { searchContainer = node; break; }
+        node = node.parentElement;
+      }
+    }
+    const scope = searchContainer || document;
+    const searchBtn =
+      Array.from(scope.querySelectorAll('button')).find(btn =>
+        btn.offsetParent !== null && /^搜尋$|^Search$/i.test(btn.textContent.trim())
+      ) ||
+      scope.querySelector('button[aria-label*="搜尋"], button[jsname="LgbsSe"]');
+
+    const allScopedBtns = Array.from(scope.querySelectorAll('button'))
+      .filter(b => b.offsetParent !== null)
+      .map(b => ({ text: b.textContent.trim().slice(0, 30), label: b.getAttribute('aria-label') || '' }));
+    steps.push({ step: 'search_btn', found: !!searchBtn, scopedButtons: allScopedBtns });
+
+    if (searchBtn) {
+      searchBtn.click();
+      steps.push({ step: 'click_search', method: 'button' });
+    } else {
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      steps.push({ step: 'click_search', method: 'enter' });
+    }
+    await sleep(2000);
+
+    // Step 7: Wait for results
+    const found = await waitForResults(45000);
+    steps.push({ step: 'wait_results', found });
+
+    const result = scrape();
+    result.steps = steps;
+    return result;
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   // ─── Message Listener ─────────────────────────────────────────────────────
 
   function messageListener(msg, _sender, sendResponse) {
-    const { action } = msg;
+    const { action, params } = msg;
 
     if (action === 'ping') {
       sendResponse({ ok: true });
@@ -256,6 +486,13 @@
 
     if (action === 'scrape') {
       waitForResults(5000).then(() => sendResponse(scrape()));
+      return true; // async
+    }
+
+    if (action === 'search') {
+      search(params)
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ status: 'error', error: err.message }));
       return true; // async
     }
 

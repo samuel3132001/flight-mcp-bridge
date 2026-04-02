@@ -141,8 +141,94 @@
     return `${m}/${d}/${y}`;
   }
 
+  async function searchMultiCity(legs) {
+    const steps = [];
+
+    // Step 1: Click Multi-City tab
+    const tabSpans = Array.from(document.querySelectorAll('.mdc-tab__content span, [role="tab"] span, mat-tab span'));
+    const mcTab = tabSpans.find(s => /multi.?city|多城市/i.test(s.textContent.trim()));
+    if (mcTab) {
+      const btn = mcTab.closest('button, [role="tab"]') || mcTab.parentElement?.parentElement;
+      btn?.click();
+      await sleep(800);
+      steps.push({ step: 'trip_type', set: true });
+    } else {
+      steps.push({ step: 'trip_type', set: false,
+        tabs: tabSpans.map(s => s.textContent.trim()) });
+    }
+    await sleep(1000);
+
+    // Step 2: Add extra legs (ITA starts with 2 in multi-city mode)
+    for (let i = 2; i < legs.length; i++) {
+      const addBtn = Array.from(document.querySelectorAll('button'))
+        .find(b => /add another flight|add flight|新增班機/i.test(b.textContent.trim()));
+      if (addBtn) { addBtn.click(); await sleep(600); }
+    }
+
+    // Step 3: Fill each leg
+    const airportInputs = qsAll('input[placeholder="Add airport"]');
+    const dateInputs    = qsAll('input[placeholder="Start date"]');
+
+    for (let i = 0; i < legs.length; i++) {
+      const { origin, destination, date } = legs[i];
+      const originInput = airportInputs[i * 2];
+      const destInput   = airportInputs[i * 2 + 1];
+      const dateInput   = dateInputs[i];
+
+      if (!originInput || !destInput) {
+        steps.push({ step: `leg_${i + 1}`, error: 'inputs not found',
+          found: airportInputs.length });
+        continue;
+      }
+
+      await typeInto(originInput, origin);
+      await sleep(1500);
+      await selectFirstSuggestion(4000);
+
+      await typeInto(destInput, destination);
+      await sleep(1500);
+      await selectFirstSuggestion(4000);
+
+      if (dateInput) {
+        await typeInto(dateInput, toITADate(date));
+        await sleep(500);
+        dateInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+        await sleep(200);
+      }
+
+      steps.push({ step: `leg_${i + 1}`, origin, destination, date });
+      await sleep(300);
+    }
+
+    // Step 4: Search
+    let searchBtn = null;
+    for (const btn of qsAll('button')) {
+      if (/\bSearch\b/.test(btn.textContent.trim()) &&
+          btn.getAttribute('aria-label') !== 'toggle light/dark theme') {
+        searchBtn = btn; break;
+      }
+    }
+    if (!searchBtn) return { status: 'error', error: 'Search button not found', steps };
+    steps.push({ step: 'search_btn', found: true });
+    searchBtn.click();
+
+    await sleep(2000);
+    const found = await waitForResults(48000);
+    steps.push({ step: 'wait_results', found });
+
+    const result = scrape(found);
+    result.steps = steps;
+    return result;
+  }
+
   async function search(params) {
     const { origin, destination, departure_date, return_date, passengers = 1 } = params;
+
+    // Multi-city path
+    if (params.legs && params.legs.length >= 2) {
+      return await searchMultiCity(params.legs);
+    }
+
     const isRoundTrip = !!return_date;
     const steps = [];
 

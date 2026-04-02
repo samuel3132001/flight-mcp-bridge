@@ -102,6 +102,8 @@ async function handleToolCall({ requestId, tool, params }) {
       result = await dispatchToGoogleFlights('scrape', params);
     } else if (tool === 'search_ita') {
       result = await dispatchToITAMatrix('search', params);
+    } else if (tool === 'search_ita_multicity') {
+      result = await dispatchToITAMulticity(params.legs, params.passengers);
     } else if (tool === 'scrape_ita_results') {
       result = await dispatchToITAMatrix('scrape', params);
     } else {
@@ -126,25 +128,27 @@ function buildGoogleFlightsUrl(params) {
 
 async function dispatchToGoogleFlights(action, params) {
   if (action === 'search') {
-    const url = buildGoogleFlightsUrl(params);
     const tabs = await chrome.tabs.query({ url: GF_URL + '*' });
     let tab;
 
     if (tabs.length > 0) {
       tab = tabs[0];
-      await chrome.tabs.update(tab.id, { url, active: true });
+      await chrome.tabs.update(tab.id, { url: GF_URL, active: true });
     } else {
-      tab = await chrome.tabs.create({ url, active: true });
+      tab = await chrome.tabs.create({ url: GF_URL, active: true });
     }
 
-    // Wait for navigation to complete
+    // Wait for page load, then for the search form to be interactive
     await waitForTabLoad(tab.id, 30000);
-
-    // Poll until flight results appear in DOM
-    await waitForFlightsReady(tab.id, 20000);
+    await waitForGFFormReady(tab.id, 15000);
 
     await ensureContentScript(tab.id, 'content-gf.js');
-    return await sendToContentScript(tab.id, { action: 'scrape', source: 'google-flights' });
+    // Delegate the entire fill + submit + wait + scrape cycle to the content script
+    return await sendToContentScript(
+      tab.id,
+      { action: 'search', source: 'google-flights', params },
+      75000
+    );
   }
 
   if (action === 'scrape') {
@@ -165,9 +169,9 @@ async function waitForFlightsReady(tabId, timeoutMs = 20000) {
       const [result] = await chrome.scripting.executeScript({
         target: { tabId },
         func: () => {
-          // Class-agnostic: look for bare price elements (e.g. "$5,076")
+          // Class-agnostic: look for bare price elements (e.g. "$5,076" or "NT$8,130")
           const priceEls = Array.from(document.querySelectorAll('*')).filter(
-            el => el.childElementCount === 0 && /^\$[\d,]+$/.test(el.textContent.trim())
+            el => el.childElementCount === 0 && /^(?:NT\$|\$)[\d,]+$/.test(el.textContent.trim())
           );
           const isLoading = document.querySelector('[aria-label*="Loading"], [aria-label*="loading"]');
           return { hasResults: priceEls.length >= 2, isLoading: !!isLoading };
@@ -274,6 +278,82 @@ async function waitForITAFormReady(tabId, timeoutMs = 10000) {
         func: () => {
           const inputs = document.querySelectorAll('input[placeholder="Add airport"]');
           return { ready: inputs.length >= 2 };
+        }
+      });
+      if (result.result.ready) return;
+    } catch { /* still loading */ }
+    await sleep(500);
+  }
+}
+
+function buildITAMulticityUrl(legs, passengers = 1) {
+  const slices = legs.map(leg => ({
+    origin: [leg.origin],
+    dest:   [leg.destination],
+    dates: {
+      searchDateType: 'specific',
+      departureDate: leg.date,
+      departureDateType: 'depart',
+      departureDateModifier: '0',
+      departureDatePreferredTimes: []
+    }
+  }));
+
+  const search = {
+    type: 'multi-city',
+    slices,
+    options: {
+      cabin: 'COACH',
+      stops: '-1',
+      extraStops: '1',
+      allowAirportChanges: 'true',
+      showOnlyAvailable: 'true'
+    },
+    pax: { adults: String(passengers || 1) }
+  };
+
+  return `${ITA_URL}flights?search=${btoa(JSON.stringify(search))}`;
+}
+
+async function dispatchToITAMulticity(legs, passengers = 1) {
+  // Use form-filling approach (same as round-trip) — direct URL nav doesn't work for multi-city
+  const tabs = await chrome.tabs.query({ url: ITA_URL + '*' });
+  let tab;
+
+  if (tabs.length === 0) {
+    tab = await chrome.tabs.create({ url: ITA_URL, active: true });
+    await waitForTabLoad(tab.id, 20000);
+  } else {
+    tab = tabs[0];
+    const tabInfo = await chrome.tabs.get(tab.id);
+    if (tabInfo.url.includes('/flights')) {
+      await chrome.tabs.update(tab.id, { url: ITA_URL, active: true });
+      await waitForTabLoad(tab.id, 20000);
+    } else {
+      await chrome.tabs.update(tab.id, { active: true });
+    }
+  }
+
+  await waitForITAFormReady(tab.id, 15000);
+  await ensureContentScript(tab.id, 'content-ita.js');
+  return await sendToContentScript(
+    tab.id,
+    { action: 'search', source: 'ita-matrix', params: { legs, passengers } },
+    82000
+  );
+}
+
+async function waitForGFFormReady(tabId, timeoutMs = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const [result] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          // Must find a VISIBLE input (not DIV) with a flight-form aria-label
+          const el = Array.from(document.querySelectorAll('input[aria-label][type="text"]'))
+            .find(el => el.offsetParent !== null);
+          return { ready: !!el };
         }
       });
       if (result.result.ready) return;
