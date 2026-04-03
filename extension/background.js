@@ -241,18 +241,31 @@ async function waitForFlightsReady(tabId, timeoutMs = 50000) {
         func: () => {
           const PRICE_RE = /(?:NT\$|TWD\s*|\$)\s*[\d,]{3,}/;
           const TIME_RE  = /\d{1,2}:\d{2}/;
-          // Real flight cards have both a price (without 起) AND a departure time
-          const cards = Array.from(document.querySelectorAll('*')).filter(el => {
-            const t = el.textContent;
-            return PRICE_RE.test(t) && TIME_RE.test(t)
-              && !/ 起/.test(t)          // exclude explore "from $X" prices
-              && t.length < 6000
-              && t.length > 50;
-          });
+
+          // Collect text from all elements including open Shadow DOM
+          function allText(root) {
+            let t = '';
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) t += node.nodeValue;
+            for (const el of root.querySelectorAll('*')) {
+              if (el.shadowRoot) t += allText(el.shadowRoot);
+            }
+            return t;
+          }
+
+          const fullText = allText(document.body);
+          // Real flight cards: price + time, no "起" (explore suffix)
+          const hasResults = PRICE_RE.test(fullText) && TIME_RE.test(fullText)
+            && !fullText.includes('起\n') && fullText.length > 2000;
           const isLoading = !!document.querySelector(
             '[aria-label*="載入中"], [aria-label*="Loading"], [aria-label*="loading"]'
           );
-          return { hasResults: cards.length >= 2, isLoading, cardCount: cards.length };
+          return {
+            hasResults, isLoading,
+            htmlLen: document.body.innerHTML.length,
+            textLen: fullText.length,
+          };
         }
       });
       if (result.result.hasResults && !result.result.isLoading) {

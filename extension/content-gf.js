@@ -112,48 +112,66 @@
 
   // Matches NT$8,529 / $8,529 / TWD 8,529 / 8,529 TWD
   const PRICE_RE = /(?:NT\$|TWD\s*|\$)\s*[\d,]{3,}|[\d,]{3,}\s*TWD/;
+  const TIME_RE  = /\d{1,2}:\d{2}/;
+
+  // Collect all visible text including open Shadow DOM roots
+  function allText(root) {
+    let t = '';
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) t += node.nodeValue + ' ';
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) t += allText(el.shadowRoot);
+    }
+    return t;
+  }
+
+  // Flatten querySelectorAll through shadow roots
+  function queryAll(root, sel) {
+    const results = Array.from(root.querySelectorAll(sel));
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) results.push(...queryAll(el.shadowRoot, sel));
+    }
+    return results;
+  }
 
   function hasResults() {
-    // Strategy 1: known DOM selectors
+    // Strategy 1: known DOM selectors (including shadow DOM)
     for (const sel of FLIGHT_ROW_SELECTORS) {
-      const nodes = Array.from(document.querySelectorAll(sel)).filter(el => {
+      const nodes = queryAll(document, sel).filter(el => {
         const t = el.textContent;
-        return PRICE_RE.test(t) && /\d{1,2}:\d{2}/.test(t);
+        return PRICE_RE.test(t) && TIME_RE.test(t);
       });
       if (nodes.length >= 2) return true;
     }
-    // Strategy 2: text heuristic
-    const count = Array.from(document.querySelectorAll('*')).filter((el) => {
-      const t = el.textContent;
-      return PRICE_RE.test(t) && /\d{1,2}:\d{2}/.test(t) && t.length < 6000 && t.length > 30;
-    }).length;
-    return count >= 2;
+    // Strategy 2: full-text heuristic (shadow DOM included)
+    const fullText = allText(document.body);
+    return PRICE_RE.test(fullText) && TIME_RE.test(fullText) && fullText.length > 2000;
   }
 
   /**
-   * Find flight card containers without relying on obfuscated class names.
-   * Strategy 1: use known DOM selectors; Strategy 2: text heuristic.
+   * Find flight card containers — searches normal DOM and open Shadow DOM.
    */
   function findFlightCards() {
-    // Strategy 1: try known selectors, filter to those with price + time
+    // Strategy 1: known selectors through shadow DOM
     for (const sel of FLIGHT_ROW_SELECTORS) {
-      const nodes = Array.from(document.querySelectorAll(sel)).filter(el => {
+      const nodes = queryAll(document, sel).filter(el => {
         const t = el.textContent;
-        return PRICE_RE.test(t) && /\d{1,2}:\d{2}/.test(t);
+        return PRICE_RE.test(t) && TIME_RE.test(t);
       });
       if (nodes.length >= 2) return nodes;
     }
 
-    // Strategy 2: text heuristic — find smallest elements containing price + time
-    const candidates = Array.from(document.querySelectorAll('*')).filter((el) => {
+    // Strategy 2: heuristic over all elements (shadow DOM included)
+    const allEls = queryAll(document, '*');
+    const candidates = allEls.filter(el => {
       const t = el.textContent;
-      return PRICE_RE.test(t) && /\d{1,2}:\d{2}/.test(t) && t.length < 6000 && t.length > 30;
+      return PRICE_RE.test(t) && TIME_RE.test(t) && t.length < 6000 && t.length > 30;
     });
 
     candidates.sort((a, b) => a.textContent.length - b.textContent.length);
-
     return candidates.filter(
-      (card) => !candidates.some((other) => other !== card && card.contains(other))
+      card => !candidates.some(other => other !== card && card.contains(other))
     );
   }
 
@@ -171,13 +189,19 @@
 
     if (cards.length === 0) {
       // Debug: sample page text to diagnose price format
-      const bodyText = document.body.innerText || '';
-      const priceHints = (bodyText.match(/[\$NT元TWD¥€£][^\n]{0,20}/g) || []).slice(0, 10);
-      const timeHints  = (bodyText.match(/\d{1,2}:\d{2}[^\n]{0,30}/g) || []).slice(0, 5);
+      const bodyText  = document.body.innerText || '';
+      const fullText  = allText(document.body);
+      const priceHints = (fullText.match(/[\$NT元TWD¥€£][^\n]{0,20}/g) || []).slice(0, 10);
+      const timeHints  = (fullText.match(/\d{1,2}:\d{2}[^\n]{0,30}/g) || []).slice(0, 5);
       return {
         status: 'no_results', flights: [], url: location.href,
         scraped_at: new Date().toISOString(),
-        debug: { priceHints, timeHints, bodyLength: bodyText.length }
+        debug: {
+          priceHints, timeHints,
+          innerTextLen: bodyText.length,
+          fullTextLen:  fullText.length,
+          htmlLen:      document.body.innerHTML.length,
+        }
       };
     }
 
