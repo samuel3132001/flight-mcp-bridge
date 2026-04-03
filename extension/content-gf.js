@@ -459,39 +459,37 @@
       await sleep(500);
     }
 
-    // Step 6: Find the main form's search button.
-    // Scope to the container that holds the origin input, to avoid clicking card buttons.
-    let searchContainer = originInput.closest('form, [role="search"]');
-    if (!searchContainer) {
-      // Walk up DOM to find a container that also contains the dep date input
-      let node = originInput.parentElement;
-      while (node && node !== document.body) {
-        if (depInput && node.contains(depInput)) { searchContainer = node; break; }
-        node = node.parentElement;
+    // Step 6: Wait for Google Flights to auto-navigate to the tfs= results URL
+    // after the "完成" button closes the calendar.
+    // GF submits automatically — do NOT click any extra button.
+    const urlBefore = location.href;
+    let autoNavigated = false;
+    for (let i = 0; i < 40; i++) {   // up to 4 s
+      await sleep(100);
+      if (location.href !== urlBefore && location.href.includes('tfs=')) {
+        autoNavigated = true;
+        break;
       }
     }
-    const scope = searchContainer || document;
-    const SEARCH_BTN_RE = /^搜尋$|^Search$/i;
-    const findSearchBtn = (root) =>
-      Array.from(root.querySelectorAll('button')).find(
-        btn => btn.offsetParent !== null && SEARCH_BTN_RE.test(btn.textContent.trim())
-      ) ||
-      root.querySelector('button[aria-label*="搜尋"], button[aria-label*="Search"], button[jsname="LgbsSe"]');
+    steps.push({ step: 'auto_navigate', autoNavigated, url: location.href });
 
-    // First try scoped container, fall back to full document
-    const searchBtn = findSearchBtn(scope) || findSearchBtn(document);
+    // If no auto-navigate, look for an explicit Search button
+    if (!autoNavigated) {
+      const SEARCH_BTN_RE = /^搜尋$|^Search$/i;
+      const searchBtn =
+        Array.from(document.querySelectorAll('button')).find(
+          btn => btn.offsetParent !== null && SEARCH_BTN_RE.test(btn.textContent.trim())
+        ) ||
+        document.querySelector('button[aria-label*="搜尋"], button[aria-label*="Search"]');
 
-    const allScopedBtns = Array.from(scope.querySelectorAll('button'))
-      .filter(b => b.offsetParent !== null)
-      .map(b => ({ text: b.textContent.trim().slice(0, 30), label: b.getAttribute('aria-label') || '' }));
-    steps.push({ step: 'search_btn', found: !!searchBtn, scopedButtons: allScopedBtns });
-
-    if (searchBtn) {
-      searchBtn.click();
-      steps.push({ step: 'click_search', method: 'button' });
-    } else {
-      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-      steps.push({ step: 'click_search', method: 'enter' });
+      steps.push({ step: 'search_btn', found: !!searchBtn });
+      if (searchBtn) {
+        searchBtn.click();
+        steps.push({ step: 'click_search', method: 'button' });
+      } else {
+        document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        steps.push({ step: 'click_search', method: 'enter' });
+      }
     }
     await sleep(2000);
 
