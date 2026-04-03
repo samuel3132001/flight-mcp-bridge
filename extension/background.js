@@ -103,7 +103,7 @@ async function handleToolCall({ requestId, tool, params }) {
     } else if (tool === 'search_ita') {
       result = await dispatchToITAMatrix('search', params);
     } else if (tool === 'search_ita_multicity') {
-      result = await dispatchToITAMulticity(params.legs, params.passengers);
+      result = await dispatchToITAMulticity(params.legs, params.passengers, params.cabin);
     } else if (tool === 'scrape_ita_results') {
       result = await dispatchToITAMatrix('scrape', params);
     } else {
@@ -315,30 +315,24 @@ function buildITAMulticityUrl(legs, passengers = 1) {
   return `${ITA_URL}flights?search=${btoa(JSON.stringify(search))}`;
 }
 
-async function dispatchToITAMulticity(legs, passengers = 1) {
-  // Use form-filling approach (same as round-trip) — direct URL nav doesn't work for multi-city
+async function dispatchToITAMulticity(legs, passengers = 1, cabin = 'economy') {
+  // Always navigate to a fresh ITA Matrix page so no stale form data remains.
   const tabs = await chrome.tabs.query({ url: ITA_URL + '*' });
   let tab;
 
   if (tabs.length === 0) {
     tab = await chrome.tabs.create({ url: ITA_URL, active: true });
-    await waitForTabLoad(tab.id, 20000);
   } else {
     tab = tabs[0];
-    const tabInfo = await chrome.tabs.get(tab.id);
-    if (tabInfo.url.includes('/flights')) {
-      await chrome.tabs.update(tab.id, { url: ITA_URL, active: true });
-      await waitForTabLoad(tab.id, 20000);
-    } else {
-      await chrome.tabs.update(tab.id, { active: true });
-    }
+    await chrome.tabs.update(tab.id, { url: ITA_URL, active: true });
   }
+  await waitForTabLoad(tab.id, 20000);
 
   await waitForITAFormReady(tab.id, 15000);
   await ensureContentScript(tab.id, 'content-ita.js');
   return await sendToContentScript(
     tab.id,
-    { action: 'search', source: 'ita-matrix', params: { legs, passengers } },
+    { action: 'search', source: 'ita-matrix', params: { legs, passengers, cabin } },
     82000
   );
 }

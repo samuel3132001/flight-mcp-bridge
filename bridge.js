@@ -29,7 +29,8 @@ const TOOLS = [
         destination:    { type: 'string', description: 'IATA airport code or city (e.g. NRT)' },
         departure_date: { type: 'string', description: 'Departure date YYYY-MM-DD' },
         return_date:    { type: 'string', description: 'Return date YYYY-MM-DD (omit for one-way)' },
-        passengers:     { type: 'integer', description: 'Number of passengers', default: 1 }
+        passengers:     { type: 'integer', description: 'Number of passengers', default: 1 },
+        cabin:          { type: 'string', description: 'Cabin class: economy, business, first', default: 'economy' }
       },
       required: ['origin', 'destination', 'departure_date']
     }
@@ -78,7 +79,8 @@ const TOOLS = [
             required: ['origin', 'destination', 'date']
           }
         },
-        passengers: { type: 'integer', description: 'Number of passengers', default: 1 }
+        passengers: { type: 'integer', description: 'Number of passengers', default: 1 },
+        cabin:      { type: 'string', description: 'Cabin class: economy, business, first', default: 'economy' }
       },
       required: ['legs']
     }

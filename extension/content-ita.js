@@ -127,11 +127,77 @@
     for (const s of RESULT_SELECTORS) {
       if (qsAll(s).length >= 2) return true;
     }
-    const pricePattern = /(?:USD|TWD|NT\$|\$)\s*[\d,]{2,}/;
+    const pricePattern = /(?:USD|TWD|JPY|NT\$|¥|\$)\s*[\d,]{2,}/;
     return pricePattern.test(document.body.innerText);
   }
 
   // ─── Search ───────────────────────────────────────────────────────────────
+
+  /**
+   * Select cabin class in ITA Matrix form.
+   * ITA uses a mat-select dropdown near the top of the form.
+   */
+  async function selectCabin(cabin) {
+    if (!cabin || cabin === 'economy') return { skipped: true };
+
+    const cabinLabels = {
+      business: ['Business', 'Business Class'],
+      first:    ['First', 'First Class'],
+      premium:  ['Premium Economy', 'Premium'],
+    };
+    const targets = cabinLabels[cabin.toLowerCase()] || [cabin];
+
+    // Find a mat-select whose current value or aria-label looks like a cabin selector
+    const selects = qsAll('mat-select');
+    const selectDebug = selects.map(sel => ({
+      ariaLabel: sel.getAttribute('aria-label'),
+      value: sel.querySelector('.mat-select-value-text, .mat-mdc-select-value-text, .mat-select-min-line')?.textContent?.trim(),
+      id: sel.id,
+      class: sel.className
+    }));
+
+    // Also check mat-button-toggle-group (ITA may use toggles instead of select)
+    const toggleGroups = qsAll('mat-button-toggle-group');
+    const toggleDebug = toggleGroups.map(g => ({
+      ariaLabel: g.getAttribute('aria-label'),
+      buttons: qsAll('mat-button-toggle', g).map(b => b.textContent.trim())
+    }));
+
+    for (const sel of selects) {
+      const label = (sel.getAttribute('aria-label') || '').toLowerCase();
+      const value = (sel.querySelector('.mat-select-value-text, .mat-mdc-select-value-text, .mat-select-min-line')?.textContent || '').toLowerCase();
+      if (/cabin|class|economy|business|first|coach|cheapest/i.test(label + ' ' + value)) {
+        sel.click();
+        await sleep(500);
+        const options = qsAll('mat-option');
+        const target = options.find(o =>
+          targets.some(t => o.textContent.trim().toLowerCase().includes(t.toLowerCase()))
+        );
+        if (target) {
+          target.click();
+          await sleep(400);
+          return { ok: true };
+        }
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await sleep(200);
+      }
+    }
+
+    // Try button toggles
+    for (const group of toggleGroups) {
+      const btns = qsAll('mat-button-toggle', group);
+      const target = btns.find(b =>
+        targets.some(t => b.textContent.trim().toLowerCase().includes(t.toLowerCase()))
+      );
+      if (target) {
+        target.click();
+        await sleep(400);
+        return { ok: true, via: 'toggle' };
+      }
+    }
+
+    return { ok: false, selectDebug, toggleDebug };
+  }
 
   /**
    * Convert YYYY-MM-DD to MM/DD/YYYY (ITA Matrix date format)
@@ -141,66 +207,165 @@
     return `${m}/${d}/${y}`;
   }
 
-  async function searchMultiCity(legs) {
+  /**
+   * Find all mat-form-field elements whose label matches "Date".
+   * Returns one per leg in document order.
+   */
+  function findDateFormFields() {
+    return qsAll('mat-form-field').filter(f => {
+      const label = qs('mat-label, label', f);
+      // Match "Date" or "Date*" exactly — NOT "Date options" or other compound labels
+      return label && /^date\*?$/i.test(label.textContent.trim());
+    });
+  }
+
+  /**
+   * Click the Date* form field for legIndex and type the date.
+   * ITA Matrix date fields open a datepicker on click; we click to focus,
+   * then type into whatever input becomes active.
+   */
+  async function fillDateField(legIndex, isoDate) {
+    const fields = findDateFormFields();
+    const field = fields[legIndex];
+    if (!field) return { ok: false, reason: `no date field at index ${legIndex}, found ${fields.length}` };
+
+    // Try to find the input directly inside the form field
+    let inp = qs('input', field);
+    if (!inp) {
+      // Click the field to reveal the input
+      field.click();
+      await sleep(400);
+      inp = qs('input', field) || document.activeElement;
+    }
+    if (!inp || inp.tagName !== 'INPUT') {
+      // Last resort: click and use activeElement
+      field.click();
+      await sleep(400);
+      inp = document.activeElement;
+    }
+    if (!inp || inp.tagName !== 'INPUT') {
+      return { ok: false, reason: 'no input found inside date field', activeTag: document.activeElement?.tagName };
+    }
+
+    inp.focus();
+    await sleep(200);
+    await typeInto(inp, toITADate(isoDate));
+    await sleep(400);
+    inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+    await sleep(200);
+    return { ok: true, value: inp.value };
+  }
+
+  async function searchMultiCity(legs, cabin) {
     const steps = [];
 
     // Step 1: Click Multi-City tab
+    // (background.js always navigates to a fresh ITA URL, so no stale data to clear)
     const tabSpans = Array.from(document.querySelectorAll('.mdc-tab__content span, [role="tab"] span, mat-tab span'));
     const mcTab = tabSpans.find(s => /multi.?city|多城市/i.test(s.textContent.trim()));
     if (mcTab) {
       const btn = mcTab.closest('button, [role="tab"]') || mcTab.parentElement?.parentElement;
       btn?.click();
-      await sleep(800);
+      await sleep(1000);
       steps.push({ step: 'trip_type', set: true });
     } else {
-      steps.push({ step: 'trip_type', set: false,
-        tabs: tabSpans.map(s => s.textContent.trim()) });
-    }
-    await sleep(1000);
-
-    // Step 2: Add extra legs (ITA starts with 2 in multi-city mode)
-    for (let i = 2; i < legs.length; i++) {
-      const addBtn = Array.from(document.querySelectorAll('button'))
-        .find(b => /add another flight|add flight|新增班機/i.test(b.textContent.trim()));
-      if (addBtn) { addBtn.click(); await sleep(600); }
+      steps.push({ step: 'trip_type', set: false });
     }
 
-    // Step 3: Fill each leg
-    const airportInputs = qsAll('input[placeholder="Add airport"]');
-    const dateInputs    = qsAll('input[placeholder="Start date"]');
+    // Step 2: Select cabin class
+    const cabinOk = await selectCabin(cabin);
+    steps.push({ step: 'cabin', cabin, set: cabinOk });
 
+    // Steps 3+: Fill each leg one at a time.
+    // After autocomplete, ITA clears the input value and shows a chip.
+    // To locate the correct inputs: for leg 0 use indices [0,1];
+    // for leg i>0, count inputs BEFORE clicking "Add Flight" and slice the new ones.
     for (let i = 0; i < legs.length; i++) {
       const { origin, destination, date } = legs[i];
-      const originInput = airportInputs[i * 2];
-      const destInput   = airportInputs[i * 2 + 1];
-      const dateInput   = dateInputs[i];
+
+      let originInput, destInput;
+
+      if (i === 0) {
+        const airports = qsAll('input[placeholder="Add airport"]');
+        originInput = airports[0];
+        destInput   = airports[1];
+        steps.push({ step: 'leg_1_inputs', total: airports.length });
+      } else {
+        const beforeCount = qsAll('input[placeholder="Add airport"]').length;
+        const addBtn = Array.from(document.querySelectorAll('button'))
+          .find(b => /^add flight$|add another flight|新增班機/i.test(b.textContent.trim()));
+        if (!addBtn) {
+          steps.push({ step: `add_leg_${i + 1}`, found: false });
+          continue;
+        }
+        addBtn.click();
+
+        const deadline = Date.now() + 4000;
+        let newAirports = [];
+        while (Date.now() < deadline) {
+          const current = qsAll('input[placeholder="Add airport"]');
+          if (current.length >= beforeCount + 2) {
+            newAirports = current.slice(beforeCount);
+            break;
+          }
+          await sleep(200);
+        }
+
+        originInput = newAirports[0];
+        destInput   = newAirports[1];
+        steps.push({ step: `add_leg_${i + 1}`, found: true,
+          beforeCount, afterCount: qsAll('input[placeholder="Add airport"]').length,
+          originFound: !!originInput, destFound: !!destInput });
+
+        // Give Angular time to attach event listeners to newly created inputs
+        await sleep(500);
+      }
 
       if (!originInput || !destInput) {
-        steps.push({ step: `leg_${i + 1}`, error: 'inputs not found',
-          found: airportInputs.length });
+        steps.push({ step: `leg_${i + 1}`, error: 'airport inputs not found' });
         continue;
       }
 
-      await typeInto(originInput, origin);
-      await sleep(1500);
-      await selectFirstSuggestion(4000);
+      // ITA auto-fills the new leg's origin with the previous leg's destination.
+      // Check if the chip already shows the correct origin code — if so, skip typing.
+      function chipsNear(input) {
+        let el = input.parentElement;
+        for (let n = 0; n < 6; n++) {
+          if (!el) break;
+          const chips = Array.from(el.querySelectorAll('mat-chip, [class*="chip"]'));
+          if (chips.length) return chips;
+          el = el.parentElement;
+        }
+        return [];
+      }
+      const existingOriginChips = chipsNear(originInput);
+      const originAlreadySet = existingOriginChips.some(
+        c => c.textContent.trim().toUpperCase().includes(origin.toUpperCase())
+      );
+
+      let originOk;
+      if (originAlreadySet) {
+        originOk = true; // already correct, no need to type
+      } else {
+        await typeInto(originInput, origin);
+        await sleep(1500);
+        originOk = await selectFirstSuggestion(4000);
+        await sleep(500);
+      }
 
       await typeInto(destInput, destination);
       await sleep(1500);
-      await selectFirstSuggestion(4000);
+      const destOk = await selectFirstSuggestion(4000);
+      await sleep(500);
 
-      if (dateInput) {
-        await typeInto(dateInput, toITADate(date));
-        await sleep(500);
-        dateInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
-        await sleep(200);
-      }
-
-      steps.push({ step: `leg_${i + 1}`, origin, destination, date });
-      await sleep(300);
+      // Fill date field by clicking the Date* mat-form-field for this leg
+      await sleep(500);
+      const dateResult = await fillDateField(i, date);
+      steps.push({ step: `leg_${i + 1}`, origin, destination, date, originOk, destOk, date: dateResult });
     }
 
-    // Step 4: Search
+    // Final: Click Search
+    await sleep(500);
     let searchBtn = null;
     for (const btn of qsAll('button')) {
       if (/\bSearch\b/.test(btn.textContent.trim()) &&
@@ -213,7 +378,7 @@
     searchBtn.click();
 
     await sleep(2000);
-    const found = await waitForResults(48000);
+    const found = await waitForResults(30000);
     steps.push({ step: 'wait_results', found });
 
     const result = scrape(found);
@@ -222,11 +387,11 @@
   }
 
   async function search(params) {
-    const { origin, destination, departure_date, return_date, passengers = 1 } = params;
+    const { origin, destination, departure_date, return_date, passengers = 1, cabin } = params;
 
     // Multi-city path
     if (params.legs && params.legs.length >= 2) {
-      return await searchMultiCity(params.legs);
+      return await searchMultiCity(params.legs, cabin);
     }
 
     const isRoundTrip = !!return_date;
@@ -257,6 +422,9 @@
       steps.push({ step: 'trip_type', set: false, type: isRoundTrip ? 'round' : 'oneway',
                    tabsFound: tripSpans.map(s => s.textContent.trim()) });
     }
+
+    // Select cabin class
+    await selectCabin(cabin);
 
     // Wait for Angular to settle after trip type change, then re-query inputs
     await sleep(1000);
@@ -376,7 +544,7 @@
 
     // Strategy 3: Text pattern scan as last resort
     if (fares.length === 0) {
-      const pricePattern = /(?:USD|TWD|NT\$|\$)\s*([\d,]+)/g;
+      const pricePattern = /(?:USD|TWD|JPY|NT\$|¥|\$)\s*([\d,]+)/g;
       const bodyText = document.body.innerText;
       let m;
       const prices = [];
@@ -407,7 +575,7 @@
     const text = row.textContent;
     if (!text.trim()) return null;
 
-    const priceMatch = text.match(/(?:USD|TWD|NT\$|\$)\s*([\d,]+)/);
+    const priceMatch = text.match(/(?:USD|TWD|JPY|NT\$|¥|\$)\s*([\d,]+)/);
     const price = priceMatch ? priceMatch[0].trim() : null;
 
     const routeMatch = text.match(/([A-Z]{3})\s*[–\-→]\s*([A-Z]{3})/);
