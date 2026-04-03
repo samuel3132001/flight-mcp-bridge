@@ -274,32 +274,22 @@
 
   const nativeInputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
 
-  // Type char-by-char: nativeInputSetter + full keyboard event chain
+  // Type text using execCommand — Angular / Google Flights picks this up correctly.
   async function typeIntoGF(el, text) {
     el.click();
     await sleep(400);
     el.focus();
     await sleep(300);
 
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-
-    // Clear existing value
-    setter?.call(el, '');
-    el.dispatchEvent(new Event('input', { bubbles: true }));
+    // Select-all + delete clears both native value and Angular's model
+    document.execCommand('selectAll', false);
+    await sleep(100);
+    document.execCommand('delete', false);
     await sleep(200);
 
-    // Maintain our own cumulative string — Angular may reset el.value
-    // between dispatches, so never read el.value back after setting it.
-    let accumulated = '';
-    for (const char of text) {
-      accumulated += char;
-      const charCode = char.toUpperCase().charCodeAt(0);
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: char, keyCode: charCode, which: charCode, bubbles: true }));
-      setter?.call(el, accumulated);
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
-      el.dispatchEvent(new KeyboardEvent('keyup',  { key: char, keyCode: charCode, which: charCode, bubbles: true }));
-      await sleep(180);
-    }
+    // insertText fires the correct InputEvent chain that Angular's autocomplete listens to
+    document.execCommand('insertText', false, text);
+    await sleep(100);
   }
 
   // Suggestions to skip — generic placeholders that aren't real airports
