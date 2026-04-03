@@ -298,6 +298,9 @@
     }
   }
 
+  // Suggestions to skip — generic placeholders that aren't real airports
+  const SKIP_SUGGESTION_RE = /任何地方|anywhere|explore destinations|不限目的地/i;
+
   async function selectFirstGFSuggestion(timeoutMs = 5000) {
     const start = Date.now();
     const selectors = [
@@ -307,7 +310,8 @@
     ];
     while (Date.now() - start < timeoutMs) {
       for (const sel of selectors) {
-        const visible = Array.from(document.querySelectorAll(sel)).filter(el => el.offsetParent !== null);
+        const visible = Array.from(document.querySelectorAll(sel))
+          .filter(el => el.offsetParent !== null && !SKIP_SUGGESTION_RE.test(el.textContent));
         if (visible.length > 0) {
           visible[0].click();
           await sleep(300);
@@ -393,10 +397,10 @@
     originInput.click();
     await sleep(400);
     await typeIntoGF(originInput, origin);
-    await sleep(1200);
-    const originOk = await selectFirstGFSuggestion(4000);
+    await sleep(1800);
+    const originOk = await selectFirstGFSuggestion(5000);
     steps.push({ step: 'fill_origin', ok: originOk });
-    await sleep(600);
+    await sleep(800);
 
     // Step 2: Destination — aria-label="要去哪裡？"
     // After origin selection GF auto-focuses destination
@@ -417,10 +421,10 @@
     if (destInput !== document.activeElement) destInput.click();
     await sleep(400);
     await typeIntoGF(destInput, destination);
-    await sleep(1200);
-    const destOk = await selectFirstGFSuggestion(4000);
+    await sleep(1800);
+    const destOk = await selectFirstGFSuggestion(5000);
     steps.push({ step: 'fill_dest', ok: destOk });
-    await sleep(600);
+    await sleep(800);
 
     // Step 3: Departure date — aria-label="去程" → click to open calendar, then click exact ISO date
     const depInput = findGFInput(['去程', 'Departure', 'Start date']);
