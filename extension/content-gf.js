@@ -402,8 +402,11 @@
     await sleep(400);
     await typeIntoGF(originInput, origin);
     await sleep(1800);
+    const originSuggestions = Array.from(document.querySelectorAll('[role="option"]'))
+      .filter(el => el.offsetParent !== null)
+      .map(el => el.textContent.trim().slice(0, 40));
     const originOk = await selectFirstGFSuggestion(5000);
-    steps.push({ step: 'fill_origin', ok: originOk });
+    steps.push({ step: 'fill_origin', ok: originOk, inputValue: originInput.value, suggestions: originSuggestions });
     await sleep(800);
 
     // Step 2: Destination — aria-label="要去哪裡？"
@@ -422,12 +425,32 @@
     }
     if (!destInput) return { status: 'error', error: 'Destination not found', steps };
 
+    // Clear any pre-existing destination chip (GF may remember last search)
+    let destContainer = destInput.parentElement;
+    for (let n = 0; n < 6; n++) {
+      if (!destContainer) break;
+      const removeBtn = destContainer.querySelector(
+        '[aria-label*="移除"], [aria-label*="Remove"], [aria-label*="Clear"], button[jsname="ZKbKQ"]'
+      );
+      if (removeBtn && removeBtn.offsetParent) {
+        removeBtn.click();
+        await sleep(600);
+        break;
+      }
+      destContainer = destContainer.parentElement;
+    }
+
     if (destInput !== document.activeElement) destInput.click();
     await sleep(400);
     await typeIntoGF(destInput, destination);
     await sleep(1800);
+
+    // Debug: log visible suggestions before picking
+    const suggestionTexts = Array.from(document.querySelectorAll('[role="option"]'))
+      .filter(el => el.offsetParent !== null)
+      .map(el => el.textContent.trim().slice(0, 40));
     const destOk = await selectFirstGFSuggestion(5000);
-    steps.push({ step: 'fill_dest', ok: destOk });
+    steps.push({ step: 'fill_dest', ok: destOk, inputValue: destInput.value, suggestions: suggestionTexts });
     await sleep(800);
 
     // Step 3: Departure date — aria-label="去程" → click to open calendar, then click exact ISO date
