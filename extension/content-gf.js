@@ -114,10 +114,15 @@
   const PRICE_RE = /(?:NT\$|TWD\s*|\$)\s*[\d,]{3,}|[\d,]{3,}\s*TWD/;
   const TIME_RE  = /\d{1,2}:\d{2}/;
 
-  // Collect all visible text including open Shadow DOM roots
+  const SKIP_TAGS = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/i;
+
+  // Collect rendered text including open Shadow DOM, skip script/style nodes
   function allText(root) {
     let t = '';
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(
+      root, NodeFilter.SHOW_TEXT,
+      { acceptNode: n => SKIP_TAGS.test(n.parentElement?.tagName) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT }
+    );
     let node;
     while ((node = walker.nextNode())) t += node.nodeValue + ' ';
     for (const el of root.querySelectorAll('*')) {
@@ -559,7 +564,26 @@
     }
 
     if (action === 'scrape') {
-      waitForResults(15000).then(() => sendResponse(scrape()));
+      (async () => {
+        // Scroll to trigger lazy-loaded flight list, then wait for results
+        window.scrollBy(0, 400);
+        await sleep(800);
+        window.scrollBy(0, 400);
+        await sleep(800);
+        window.scrollTo(0, 0);
+        await sleep(500);
+        await waitForResults(15000);
+        const result = scrape();
+        // If still no results, add raw HTML hints for diagnosis
+        if (result.status === 'no_results') {
+          const html = document.documentElement.innerHTML;
+          result.debug = result.debug || {};
+          result.debug.htmlPriceHints = (html.match(/(?:NT\$|TWD\s?)[\d,]{3,}/g) || []).slice(0, 5);
+          result.debug.htmlTimeHints  = (html.match(/\d{1,2}:\d{2}(?:\s?[AaPp][Mm])?/g) || []).slice(0, 5);
+          result.debug.htmlLen = html.length;
+        }
+        sendResponse(result);
+      })();
       return true; // async
     }
 
