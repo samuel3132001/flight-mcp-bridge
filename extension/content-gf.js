@@ -283,18 +283,22 @@
 
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
 
-    // Clear
+    // Clear existing value
     setter?.call(el, '');
     el.dispatchEvent(new Event('input', { bubbles: true }));
-    await sleep(100);
+    await sleep(200);
 
+    // Maintain our own cumulative string — Angular may reset el.value
+    // between dispatches, so never read el.value back after setting it.
+    let accumulated = '';
     for (const char of text) {
+      accumulated += char;
       const charCode = char.toUpperCase().charCodeAt(0);
       el.dispatchEvent(new KeyboardEvent('keydown', { key: char, keyCode: charCode, which: charCode, bubbles: true }));
-      setter?.call(el, el.value + char);
+      setter?.call(el, accumulated);
       el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
       el.dispatchEvent(new KeyboardEvent('keyup',  { key: char, keyCode: charCode, which: charCode, bubbles: true }));
-      await sleep(150);
+      await sleep(180);
     }
   }
 
