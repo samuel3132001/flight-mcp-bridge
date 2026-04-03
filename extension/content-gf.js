@@ -576,11 +576,23 @@
         const result = scrape();
         // If still no results, add raw HTML hints for diagnosis
         if (result.status === 'no_results') {
-          const html = document.documentElement.innerHTML;
           result.debug = result.debug || {};
-          result.debug.htmlPriceHints = (html.match(/(?:NT\$|TWD\s?)[\d,]{3,}/g) || []).slice(0, 5);
-          result.debug.htmlTimeHints  = (html.match(/\d{1,2}:\d{2}(?:\s?[AaPp][Mm])?/g) || []).slice(0, 5);
-          result.debug.htmlLen = html.length;
+          result.debug.htmlLen = document.documentElement.innerHTML.length;
+
+          // Look for embedded JSON flight data in inline script tags
+          const scripts = Array.from(document.querySelectorAll('script:not([src])'));
+          const flightScripts = scripts.filter(s =>
+            s.textContent.length > 5000 &&
+            /\d{1,2}:\d{2}/.test(s.textContent) &&
+            /[A-Z]{3}/.test(s.textContent)
+          );
+          if (flightScripts.length > 0) {
+            // Try to extract times and prices from the script data
+            const scriptText = flightScripts.map(s => s.textContent).join(' ');
+            result.debug.scriptTimeHints  = (scriptText.match(/(?:0[6-9]|1\d|2[0-3]):[0-5]\d/g) || []).slice(0, 8);
+            result.debug.scriptPriceHints = (scriptText.match(/(?:NT\$|TWD)[\d,]{3,}/g) || []).slice(0, 5);
+            result.debug.flightScriptCount = flightScripts.length;
+          }
         }
         sendResponse(result);
       })();

@@ -255,9 +255,21 @@ async function waitForFlightsReady(tabId, timeoutMs = 50000) {
           }
 
           const fullText = allText(document.body);
-          // Real flight cards: price + time, no "起" (explore suffix)
-          const hasResults = PRICE_RE.test(fullText) && TIME_RE.test(fullText)
+          // Strategy 1: rendered flight cards (price + time, no 起)
+          let hasResults = PRICE_RE.test(fullText) && TIME_RE.test(fullText)
             && !fullText.includes('起\n') && fullText.length > 2000;
+
+          // Strategy 2: flight data embedded in script tags
+          if (!hasResults) {
+            const scripts = Array.from(document.querySelectorAll('script:not([src])'));
+            const hasFlightScriptData = scripts.some(s =>
+              s.textContent.length > 5000 &&
+              /(?:0[6-9]|1\d|2[0-3]):[0-5]\d/.test(s.textContent) &&
+              PRICE_RE.test(s.textContent)
+            );
+            if (hasFlightScriptData) hasResults = true;
+          }
+
           const isLoading = !!document.querySelector(
             '[aria-label*="載入中"], [aria-label*="Loading"], [aria-label*="loading"]'
           );
