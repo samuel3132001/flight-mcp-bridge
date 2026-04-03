@@ -124,7 +124,7 @@ const GF_AIRPORT_KG = {
   // Taiwan
   TPE: '/m/0ftkx', TSA: '/m/04t36', KHH: '/m/02xkrq',
   // Korea
-  ICN: '/m/02j9z', GMP: '/m/02j9z', PUS: '/m/016hhs',
+  ICN: '/m/02j71', GMP: '/m/02j71', PUS: '/m/016hhs',
   // Japan
   NRT: '/m/0g284', HND: '/m/013d6j', KIX: '/m/01y_mz',
   ITM: '/m/05k2xp', CTS: '/m/0h23m', OKA: '/m/01xt8m',
