@@ -128,26 +128,27 @@ function buildGoogleFlightsUrl(params) {
 
 async function dispatchToGoogleFlights(action, params) {
   if (action === 'search') {
+    // Navigate directly to the search URL — bypasses form filling entirely
+    const searchUrl = buildGoogleFlightsUrl(params);
     const tabs = await chrome.tabs.query({ url: GF_URL + '*' });
     let tab;
 
     if (tabs.length > 0) {
       tab = tabs[0];
-      await chrome.tabs.update(tab.id, { url: GF_URL, active: true });
+      await chrome.tabs.update(tab.id, { url: searchUrl, active: true });
     } else {
-      tab = await chrome.tabs.create({ url: GF_URL, active: true });
+      tab = await chrome.tabs.create({ url: searchUrl, active: true });
     }
 
-    // Wait for page load, then for the search form to be interactive
+    // Wait for initial page load, then wait for flight result cards to appear
     await waitForTabLoad(tab.id, 30000);
-    await waitForGFFormReady(tab.id, 15000);
+    await waitForFlightsReady(tab.id, 50000);
 
     await ensureContentScript(tab.id, 'content-gf.js');
-    // Delegate the entire fill + submit + wait + scrape cycle to the content script
     return await sendToContentScript(
       tab.id,
-      { action: 'search', source: 'google-flights', params },
-      75000
+      { action: 'scrape', source: 'google-flights', params },
+      55000
     );
   }
 
@@ -162,23 +163,31 @@ async function dispatchToGoogleFlights(action, params) {
   }
 }
 
-async function waitForFlightsReady(tabId, timeoutMs = 20000) {
+async function waitForFlightsReady(tabId, timeoutMs = 50000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
       const [result] = await chrome.scripting.executeScript({
         target: { tabId },
         func: () => {
-          // Class-agnostic: look for bare price elements (e.g. "$5,076" or "NT$8,130")
-          const priceEls = Array.from(document.querySelectorAll('*')).filter(
-            el => el.childElementCount === 0 && /^(?:NT\$|\$)[\d,]+$/.test(el.textContent.trim())
+          const PRICE_RE = /(?:NT\$|TWD\s*|\$)\s*[\d,]{3,}/;
+          const TIME_RE  = /\d{1,2}:\d{2}/;
+          // Real flight cards have both a price (without 起) AND a departure time
+          const cards = Array.from(document.querySelectorAll('*')).filter(el => {
+            const t = el.textContent;
+            return PRICE_RE.test(t) && TIME_RE.test(t)
+              && !/ 起/.test(t)          // exclude explore "from $X" prices
+              && t.length < 6000
+              && t.length > 50;
+          });
+          const isLoading = !!document.querySelector(
+            '[aria-label*="載入中"], [aria-label*="Loading"], [aria-label*="loading"]'
           );
-          const isLoading = document.querySelector('[aria-label*="Loading"], [aria-label*="loading"]');
-          return { hasResults: priceEls.length >= 2, isLoading: !!isLoading };
+          return { hasResults: cards.length >= 2, isLoading, cardCount: cards.length };
         }
       });
       if (result.result.hasResults && !result.result.isLoading) {
-        await sleep(1000); // extra settle time
+        await sleep(1500);
         return;
       }
     } catch { /* page still loading */ }
