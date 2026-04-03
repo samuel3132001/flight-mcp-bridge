@@ -92,48 +92,66 @@
 
   function waitForResults(timeoutMs = 30000) {
     return new Promise((resolve) => {
-      if (hasResults()) return resolve();
+      if (hasResults()) return resolve(true);
 
       const observer = new MutationObserver(() => {
         if (hasResults()) {
           observer.disconnect();
           clearTimeout(timer);
-          resolve();
+          resolve(true);
         }
       });
       observer.observe(document.body, { childList: true, subtree: true });
 
       const timer = setTimeout(() => {
         observer.disconnect();
-        resolve(); // Resolve anyway — scrape whatever is there
+        resolve(false); // Resolve anyway — scrape whatever is there
       }, timeoutMs);
     });
   }
 
+  // Matches NT$8,529 / $8,529 / TWD 8,529 / 8,529 TWD
+  const PRICE_RE = /(?:NT\$|TWD\s*|\$)\s*[\d,]{3,}|[\d,]{3,}\s*TWD/;
+
   function hasResults() {
-    // Look for elements that contain both a price and a time (actual flight cards)
+    // Strategy 1: known DOM selectors
+    for (const sel of FLIGHT_ROW_SELECTORS) {
+      const nodes = Array.from(document.querySelectorAll(sel)).filter(el => {
+        const t = el.textContent;
+        return PRICE_RE.test(t) && /\d{1,2}:\d{2}/.test(t);
+      });
+      if (nodes.length >= 2) return true;
+    }
+    // Strategy 2: text heuristic
     const count = Array.from(document.querySelectorAll('*')).filter((el) => {
       const t = el.textContent;
-      return /\$[\d,]+/.test(t) && /\d{1,2}:\d{2}/.test(t) && t.length < 3000 && t.length > 30;
+      return PRICE_RE.test(t) && /\d{1,2}:\d{2}/.test(t) && t.length < 6000 && t.length > 30;
     }).length;
     return count >= 2;
   }
 
   /**
    * Find flight card containers without relying on obfuscated class names.
-   * Strategy: find all elements whose text contains both a price and a time,
-   * take the smallest ones, then deduplicate by keeping only innermost nodes.
+   * Strategy 1: use known DOM selectors; Strategy 2: text heuristic.
    */
   function findFlightCards() {
+    // Strategy 1: try known selectors, filter to those with price + time
+    for (const sel of FLIGHT_ROW_SELECTORS) {
+      const nodes = Array.from(document.querySelectorAll(sel)).filter(el => {
+        const t = el.textContent;
+        return PRICE_RE.test(t) && /\d{1,2}:\d{2}/.test(t);
+      });
+      if (nodes.length >= 2) return nodes;
+    }
+
+    // Strategy 2: text heuristic — find smallest elements containing price + time
     const candidates = Array.from(document.querySelectorAll('*')).filter((el) => {
       const t = el.textContent;
-      return /\$[\d,]+/.test(t) && /\d{1,2}:\d{2}/.test(t) && t.length < 3000 && t.length > 30;
+      return PRICE_RE.test(t) && /\d{1,2}:\d{2}/.test(t) && t.length < 6000 && t.length > 30;
     });
 
-    // Sort by text length ascending — smallest containing elements first
     candidates.sort((a, b) => a.textContent.length - b.textContent.length);
 
-    // Keep only innermost (remove ancestors of other candidates)
     return candidates.filter(
       (card) => !candidates.some((other) => other !== card && card.contains(other))
     );
@@ -184,12 +202,12 @@
     // Price
     let price = null;
     const priceEl = Array.from(card.querySelectorAll('*')).find(
-      (el) => el.childElementCount === 0 && /^(?:NT\$|\$)[\d,]+$/.test(el.textContent.trim())
+      (el) => el.childElementCount === 0 && /^(?:NT\$|TWD\s*|\$)\s*[\d,]{3,}$|^[\d,]{3,}\s*TWD$/.test(el.textContent.trim())
     );
     if (priceEl) {
       price = priceEl.textContent.trim();
     } else {
-      const m = text.match(/(?:NT\$|TWD\s*|USD\s*|\$)\s*([\d,]+)/);
+      const m = text.match(/(?:NT\$|TWD\s*|USD\s*|\$)\s*[\d,]{3,}|[\d,]{3,}\s*TWD/);
       if (m) price = m[0].trim();
     }
 
@@ -441,11 +459,15 @@
       }
     }
     const scope = searchContainer || document;
-    const searchBtn =
-      Array.from(scope.querySelectorAll('button')).find(btn =>
-        btn.offsetParent !== null && /^搜尋$|^Search$/i.test(btn.textContent.trim())
+    const SEARCH_BTN_RE = /^搜尋$|^Search$/i;
+    const findSearchBtn = (root) =>
+      Array.from(root.querySelectorAll('button')).find(
+        btn => btn.offsetParent !== null && SEARCH_BTN_RE.test(btn.textContent.trim())
       ) ||
-      scope.querySelector('button[aria-label*="搜尋"], button[jsname="LgbsSe"]');
+      root.querySelector('button[aria-label*="搜尋"], button[aria-label*="Search"], button[jsname="LgbsSe"]');
+
+    // First try scoped container, fall back to full document
+    const searchBtn = findSearchBtn(scope) || findSearchBtn(document);
 
     const allScopedBtns = Array.from(scope.querySelectorAll('button'))
       .filter(b => b.offsetParent !== null)
@@ -485,7 +507,7 @@
     }
 
     if (action === 'scrape') {
-      waitForResults(5000).then(() => sendResponse(scrape()));
+      waitForResults(15000).then(() => sendResponse(scrape()));
       return true; // async
     }
 
