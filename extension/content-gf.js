@@ -170,7 +170,15 @@
     const cards = findFlightCards();
 
     if (cards.length === 0) {
-      return { status: 'no_results', flights: [], url: location.href, scraped_at: new Date().toISOString() };
+      // Debug: sample page text to diagnose price format
+      const bodyText = document.body.innerText || '';
+      const priceHints = (bodyText.match(/[\$NT元TWD¥€£][^\n]{0,20}/g) || []).slice(0, 10);
+      const timeHints  = (bodyText.match(/\d{1,2}:\d{2}[^\n]{0,30}/g) || []).slice(0, 5);
+      return {
+        status: 'no_results', flights: [], url: location.href,
+        scraped_at: new Date().toISOString(),
+        debug: { priceHints, timeHints, bodyLength: bodyText.length }
+      };
     }
 
     const seen = new Set();
@@ -483,7 +491,8 @@
     }
     await sleep(2000);
 
-    // Step 7: Wait for results
+    // Step 7: Wait for results — also wait an extra 3 s for SPA to settle
+    await sleep(3000);
     const found = await waitForResults(45000);
     steps.push({ step: 'wait_results', found });
 
