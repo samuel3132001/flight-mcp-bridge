@@ -21,7 +21,7 @@ const TOOL_TIMEOUT_MS = 90_000;
 const TOOLS = [
   {
     name: 'search_ita',
-    description: 'Search ITA Matrix for theoretical lowest fares. Searches all fare classes, hidden city combos, open jaw routes.',
+    description: 'Search ITA Matrix for theoretical lowest fares. To search business or first class you MUST pass the cabin parameter explicitly.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -30,7 +30,7 @@ const TOOLS = [
         departure_date: { type: 'string', description: 'Departure date YYYY-MM-DD' },
         return_date:    { type: 'string', description: 'Return date YYYY-MM-DD (omit for one-way)' },
         passengers:     { type: 'integer', description: 'Number of passengers', default: 1 },
-        cabin:          { type: 'string', description: 'Cabin class: economy, business, first', default: 'economy' }
+        cabin:          { type: 'string', enum: ['economy', 'business', 'first'], description: 'Cabin class. Must be "business" for business class or "first" for first class. Defaults to "economy" if omitted.' }
       },
       required: ['origin', 'destination', 'departure_date']
     }
@@ -80,7 +80,7 @@ const TOOLS = [
           }
         },
         passengers: { type: 'integer', description: 'Number of passengers', default: 1 },
-        cabin:      { type: 'string', description: 'Cabin class: economy, business, first', default: 'economy' }
+        cabin:      { type: 'string', enum: ['economy', 'business', 'first'], description: 'Cabin class. Must be "business" for business class or "first" for first class. Defaults to "economy" if omitted.' }
       },
       required: ['legs']
     }

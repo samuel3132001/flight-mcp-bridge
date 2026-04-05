@@ -136,6 +136,7 @@
   /**
    * Select cabin class in ITA Matrix form.
    * ITA uses a mat-select dropdown near the top of the form.
+   * Returns { ok, via, attempted, selectedText } for debugging.
    */
   async function selectCabin(cabin) {
     if (!cabin || cabin === 'economy') return { skipped: true };
@@ -147,56 +148,58 @@
     };
     const targets = cabinLabels[cabin.toLowerCase()] || [cabin];
 
-    // Find a mat-select whose current value or aria-label looks like a cabin selector
-    const selects = qsAll('mat-select');
-    const selectDebug = selects.map(sel => ({
-      ariaLabel: sel.getAttribute('aria-label'),
-      value: sel.querySelector('.mat-select-value-text, .mat-mdc-select-value-text, .mat-select-min-line')?.textContent?.trim(),
-      id: sel.id,
-      class: sel.className
-    }));
+    // Try up to 2 times (first attempt may race with Angular rendering)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) await sleep(800);
 
-    // Also check mat-button-toggle-group (ITA may use toggles instead of select)
-    const toggleGroups = qsAll('mat-button-toggle-group');
-    const toggleDebug = toggleGroups.map(g => ({
-      ariaLabel: g.getAttribute('aria-label'),
-      buttons: qsAll('mat-button-toggle', g).map(b => b.textContent.trim())
-    }));
+      // Strategy 1: mat-select dropdown
+      const selects = qsAll('mat-select');
+      for (const sel of selects) {
+        const label = (sel.getAttribute('aria-label') || '').toLowerCase();
+        const value = (sel.querySelector('.mat-select-value-text, .mat-mdc-select-value-text, .mat-select-min-line')?.textContent || '').toLowerCase();
+        if (/cabin|class|economy|business|first|coach|cheapest/i.test(label + ' ' + value)) {
+          sel.click();
+          await sleep(800); // wait for dropdown animation
+          const options = qsAll('mat-option');
+          const target = options.find(o =>
+            targets.some(t => o.textContent.trim().toLowerCase().includes(t.toLowerCase()))
+          );
+          if (target) {
+            const selectedText = target.textContent.trim();
+            target.click();
+            await sleep(500);
+            return { ok: true, via: 'mat-select', attempt, selectedText };
+          }
+          // Close dropdown and try next strategy
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+          await sleep(300);
+        }
+      }
 
-    for (const sel of selects) {
-      const label = (sel.getAttribute('aria-label') || '').toLowerCase();
-      const value = (sel.querySelector('.mat-select-value-text, .mat-mdc-select-value-text, .mat-select-min-line')?.textContent || '').toLowerCase();
-      if (/cabin|class|economy|business|first|coach|cheapest/i.test(label + ' ' + value)) {
-        sel.click();
-        await sleep(500);
-        const options = qsAll('mat-option');
-        const target = options.find(o =>
-          targets.some(t => o.textContent.trim().toLowerCase().includes(t.toLowerCase()))
+      // Strategy 2: mat-button-toggle-group
+      const toggleGroups = qsAll('mat-button-toggle-group');
+      for (const group of toggleGroups) {
+        const btns = qsAll('mat-button-toggle', group);
+        const target = btns.find(b =>
+          targets.some(t => b.textContent.trim().toLowerCase().includes(t.toLowerCase()))
         );
         if (target) {
           target.click();
           await sleep(400);
-          return { ok: true };
+          return { ok: true, via: 'toggle', attempt, selectedText: target.textContent.trim() };
         }
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-        await sleep(200);
       }
     }
 
-    // Try button toggles
-    for (const group of toggleGroups) {
-      const btns = qsAll('mat-button-toggle', group);
-      const target = btns.find(b =>
-        targets.some(t => b.textContent.trim().toLowerCase().includes(t.toLowerCase()))
-      );
-      if (target) {
-        target.click();
-        await sleep(400);
-        return { ok: true, via: 'toggle' };
-      }
-    }
-
-    return { ok: false, selectDebug, toggleDebug };
+    // Debug info on failure
+    const selectDebug = qsAll('mat-select').map(sel => ({
+      ariaLabel: sel.getAttribute('aria-label'),
+      value: sel.querySelector('.mat-select-value-text, .mat-mdc-select-value-text, .mat-select-min-line')?.textContent?.trim(),
+    }));
+    const toggleDebug = qsAll('mat-button-toggle-group').map(g => ({
+      buttons: qsAll('mat-button-toggle', g).map(b => b.textContent.trim())
+    }));
+    return { ok: false, attempted: cabin, selectDebug, toggleDebug };
   }
 
   /**
@@ -424,7 +427,8 @@
     }
 
     // Select cabin class
-    await selectCabin(cabin);
+    const cabinResult = await selectCabin(cabin);
+    steps.push({ step: 'cabin', cabin: cabin || 'economy', result: cabinResult });
 
     // Wait for Angular to settle after trip type change, then re-query inputs
     await sleep(1000);

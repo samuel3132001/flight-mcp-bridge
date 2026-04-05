@@ -118,38 +118,36 @@ async function handleToolCall({ requestId, tool, params }) {
 
 // ─── Google Flights ───────────────────────────────────────────────────────────
 
-// ─── Google Flights KG IDs (Freebase / Knowledge Graph) ──────────────────────
-// These are the entity IDs that GF encodes in its tfs= protobuf URLs.
+// ─── Google Flights Airport Encoding ─────────────────────────────────────────
+// Confirmed Freebase/Knowledge Graph IDs (type=2 in tfs= protobuf).
+// Any airport NOT listed here falls back to plain IATA code (type=1).
 const GF_AIRPORT_KG = {
-  // Taiwan
-  TPE: '/m/0ftkx', TSA: '/m/04t36', KHH: '/m/02xkrq',
-  // Korea
-  ICN: '/m/02j71', GMP: '/m/02j71', PUS: '/m/016hhs',
-  // Japan
-  NRT: '/m/0g284', HND: '/m/013d6j', KIX: '/m/01y_mz',
-  ITM: '/m/05k2xp', CTS: '/m/0h23m', OKA: '/m/01xt8m',
-  FUK: '/m/01pr_z', NGO: '/m/0d6lp',
-  // Greater China
-  HKG: '/m/03n2ts', MFM: '/m/0mxfs',
-  PEK: '/m/0d4ywc', PVG: '/m/07x9w', SHA: '/m/01d6b',
-  CAN: '/m/019qj0',
-  // Southeast Asia
-  SIN: '/m/06t2t', KUL: '/m/05l5n',
-  BKK: '/m/05fjf', DMK: '/m/01_5dc',
-  MNL: '/m/013x8j', CGK: '/m/03y9_n',
-  SGN: '/m/02h_9t', HAN: '/m/02h6d',
+  // Taiwan (confirmed from real GF URLs)
+  TPE: '/m/0ftkx',
+  // Japan (confirmed)
+  NRT: '/m/0g284', HND: '/m/013d6j',
 };
 
 /**
+ * Return { type, code } for a given IATA code.
+ * type=2 + KG ID for confirmed airports; type=1 + IATA string as fallback.
+ */
+function gfAirport(iata) {
+  const kg = GF_AIRPORT_KG[(iata || '').toUpperCase()];
+  return kg
+    ? { type: 2, code: kg }
+    : { type: 1, code: iata.toUpperCase() };
+}
+
+/**
  * Build a Google Flights tfs= protobuf URL directly.
- * Reverse-engineered from GF's own URLs — avoids all form filling.
- * Returns null if any airport KG ID is unknown.
+ * Reverse-engineered from real GF URLs — avoids all form filling.
+ * Always returns a URL (IATA fallback for unknown airports).
  */
 function buildGFTfsUrl(params) {
   const { origin, destination, departure_date, return_date } = params;
-  const oKg = GF_AIRPORT_KG[(origin || '').toUpperCase()];
-  const dKg = GF_AIRPORT_KG[(destination || '').toUpperCase()];
-  if (!oKg || !dKg) return null;
+  const o = gfAirport(origin);
+  const d = gfAirport(destination);
 
   // Minimal protobuf encoder (varint + length-delimited)
   function varint(n) {
@@ -164,14 +162,17 @@ function buildGFTfsUrl(params) {
   const fv   = (f, v) => [...tag(f, 0), ...varint(v)];
   const fs   = (f, s) => [...tag(f, 2), ...str(s)];
   const fm   = (f, inner) => { const b = inner.flat(); return [...tag(f, 2), ...varint(b.length), ...b]; };
-  const apt  = (f, t, kg) => fm(f, [...fv(1, t), ...fs(2, kg)]);
-  // origin uses type=2, destination uses type=4 (consistent across all legs)
-  const leg  = (date, fKg, fT, tKg, tT) => [...fs(2, date), ...apt(13, fT, fKg), ...apt(14, tT, tKg)];
+  // Airport submessage: field 1 = type (1=IATA, 2=KG), field 2 = code string
+  const apt  = (f, airport) => fm(f, [...fv(1, airport.type), ...fs(2, airport.code)]);
+  // Leg: field 2 = date, field 13 = origin airport, field 14 = dest airport
+  const leg  = (date, from, to) => [...fs(2, date), ...apt(13, from), ...apt(14, to)];
 
   const bytes = [
-    ...fv(1, 28), ...fv(2, 1),
-    ...fm(3, leg(departure_date, oKg, 2, dKg, 4)),
-    ...(return_date ? fm(3, leg(return_date, dKg, 4, oKg, 2)) : []),
+    ...fv(1, 28),
+    // field 2: trip type — 1=one-way, 2=round-trip
+    ...fv(2, return_date ? 2 : 1),
+    ...fm(3, leg(departure_date, o, d)),
+    ...(return_date ? fm(3, leg(return_date, d, o)) : []),
     ...fv(8, 1), ...fv(9, 1), ...fv(14, 1),
     // field 16: { field_1: maxUint64 } — fixed search-options blob
     0x82, 0x01, 0x0b, 0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
@@ -180,19 +181,12 @@ function buildGFTfsUrl(params) {
 
   const b64 = btoa(String.fromCharCode(...bytes))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  return `${GF_URL}?tfs=${b64}&tfu=KgIIAw`;
+  // Use /search path (confirmed from real GF URLs)
+  return `https://www.google.com/travel/flights/search?tfs=${b64}`;
 }
 
 function buildGoogleFlightsUrl(params) {
-  // Prefer direct tfs= URL (no form interaction needed)
-  const tfsUrl = buildGFTfsUrl(params);
-  if (tfsUrl) return tfsUrl;
-  // Fallback for unknown airports
-  const { origin, destination, departure_date, return_date, passengers = 1 } = params || {};
-  let query = `Flights from ${origin} to ${destination} on ${departure_date}`;
-  if (return_date) query += ` returning ${return_date}`;
-  if (passengers > 1) query += ` for ${passengers} passengers`;
-  return `${GF_URL}?q=${encodeURIComponent(query)}`;
+  return buildGFTfsUrl(params);
 }
 
 async function dispatchToGoogleFlights(action, params) {
