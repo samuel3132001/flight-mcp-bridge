@@ -14,7 +14,7 @@ const { randomUUID } = require('crypto');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const WS_PORT   = 9222;
+const WS_PORT   = 9223;
 const SSE_PORT  = 3000;
 const TOOL_TIMEOUT_MS = 90_000;
 
@@ -30,7 +30,7 @@ const TOOLS = [
         departure_date: { type: 'string', description: 'Departure date YYYY-MM-DD' },
         return_date:    { type: 'string', description: 'Return date YYYY-MM-DD (omit for one-way)' },
         passengers:     { type: 'integer', description: 'Number of passengers', default: 1 },
-        cabin:          { type: 'string', enum: ['economy', 'business', 'first'], description: 'Cabin class. Must be "business" for business class or "first" for first class. Defaults to "economy" if omitted.' }
+        cabin:          { type: 'string', enum: ['economy', 'premium_economy', 'business', 'first'], description: 'Cabin class. Defaults to "economy" if omitted.' }
       },
       required: ['origin', 'destination', 'departure_date']
     }
@@ -50,9 +50,35 @@ const TOOLS = [
         destination:    { type: 'string', description: 'IATA airport code or city (e.g. NRT)' },
         departure_date: { type: 'string', description: 'Departure date YYYY-MM-DD' },
         return_date:    { type: 'string', description: 'Return date YYYY-MM-DD (omit for one-way)' },
-        passengers:     { type: 'integer', description: 'Number of passengers', default: 1 }
+        passengers:     { type: 'integer', description: 'Number of passengers', default: 1 },
+        cabin:          { type: 'string', enum: ['economy', 'premium_economy', 'business', 'first'], description: 'Cabin class. Defaults to "economy" if omitted.' }
       },
       required: ['origin', 'destination', 'departure_date']
+    }
+  },
+  {
+    name: 'search_flights_multicity',
+    description: 'Search Google Flights for multi-city itineraries (up to 6 legs).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        legs: {
+          type: 'array',
+          description: 'Ordered list of flight legs',
+          items: {
+            type: 'object',
+            properties: {
+              origin:      { type: 'string', description: 'IATA departure airport' },
+              destination: { type: 'string', description: 'IATA arrival airport' },
+              date:        { type: 'string', description: 'Departure date YYYY-MM-DD' }
+            },
+            required: ['origin', 'destination', 'date']
+          }
+        },
+        passengers: { type: 'integer', description: 'Number of passengers', default: 1 },
+        cabin:      { type: 'string', enum: ['economy', 'premium_economy', 'business', 'first'], description: 'Cabin class. Defaults to "economy" if omitted.' }
+      },
+      required: ['legs']
     }
   },
   {
@@ -80,7 +106,7 @@ const TOOLS = [
           }
         },
         passengers: { type: 'integer', description: 'Number of passengers', default: 1 },
-        cabin:      { type: 'string', enum: ['economy', 'business', 'first'], description: 'Cabin class. Must be "business" for business class or "first" for first class. Defaults to "economy" if omitted.' }
+        cabin:      { type: 'string', enum: ['economy', 'premium_economy', 'business', 'first'], description: 'Cabin class. Defaults to "economy" if omitted.' }
       },
       required: ['legs']
     }
@@ -165,6 +191,7 @@ async function handleRpc(req) {
 
   if (method === 'tools/call') {
     const { name, arguments: args } = params;
+    stderr(`[bridge] Tool call: ${name} with args: ${JSON.stringify(args)}`);
     try {
       const result = await callExtensionTool(name, args || {});
       return {

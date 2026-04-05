@@ -156,9 +156,11 @@ Agent:
 
 | 工具 | 說明 | 參數 |
 |------|------|------|
-| `search_ita` | 在 ITA Matrix 搜尋（自動填表、送出） | `origin`, `destination`, `departure_date`, `return_date?`, `passengers?` |
+| `search_ita` | 在 ITA Matrix 搜尋（自動填表、送出） | `origin`, `destination`, `departure_date`, `return_date?`, `passengers?`, `cabin?` |
+| `search_ita_multicity` | 在 ITA Matrix 搜尋多城市行程 | `legs`, `passengers?`, `cabin?` |
 | `scrape_ita_results` | 重新抓取目前 ITA Matrix 結果頁 | 無 |
-| `search_flights` | 在 Google Flights 搜尋 | `origin`, `destination`, `departure_date`, `return_date?`, `passengers?` |
+| `search_flights` | 在 Google Flights 搜尋 | `origin`, `destination`, `departure_date`, `return_date?`, `passengers?`, `cabin?` |
+| `search_flights_multicity` | 在 Google Flights 搜尋多城市行程 | `legs`, `passengers?`, `cabin?` |
 | `scrape_results` | 重新抓取目前 Google Flights 結果頁 | 無 |
 
 所有工具 timeout 為 **90 秒**。ITA Matrix 搜尋通常需要 30–60 秒。

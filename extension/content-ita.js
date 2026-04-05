@@ -107,19 +107,44 @@
 
   /**
    * Wait until results appear (price rows visible).
+   * Uses MutationObserver for better performance and a stability check.
    */
-  async function waitForResults(timeoutMs = 60000) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (hasResults()) return true;
-      await sleep(500);
-    }
-    return false;
+  function waitForResults(timeoutMs = 60000, stabilityMs = 800) {
+    return new Promise((resolve) => {
+      if (hasResults()) {
+        let stabilityTimer = setTimeout(() => resolve(true), stabilityMs);
+        const stabilityObserver = new MutationObserver(() => {
+          clearTimeout(stabilityTimer);
+          stabilityTimer = setTimeout(() => {
+            stabilityObserver.disconnect();
+            resolve(true);
+          }, stabilityMs);
+        });
+        stabilityObserver.observe(document.body, { childList: true, subtree: true });
+        return;
+      }
+
+      const observer = new MutationObserver(() => {
+        if (hasResults()) {
+          observer.disconnect();
+          clearTimeout(timeoutTimer);
+          // Wait for stability
+          waitForResults(10000, stabilityMs).then(resolve);
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+
+      const timeoutTimer = setTimeout(() => {
+        observer.disconnect();
+        resolve(hasResults());
+      }, timeoutMs);
+    });
   }
 
   function hasResults() {
     const RESULT_SELECTORS = [
       '[role="grid"] tr',
+      '.matrix-results-table tr',
       'table[class*="results"] tr',
       'table tr td[class*="price"]',
       '[class*="itinerary"]',
@@ -131,75 +156,80 @@
     return pricePattern.test(document.body.innerText);
   }
 
+  function detectError() {
+    const bodyText = document.body.innerText;
+    const ERROR_PATTERNS = [
+      /no results found/i,
+      /could not be completed/i,
+      /no flights found/i,
+      /沒有符合條件的航班/i,
+      /無法完成搜尋/i
+    ];
+    for (const p of ERROR_PATTERNS) {
+      if (p.test(bodyText) && bodyText.length < 10000) return true;
+    }
+    return false;
+  }
+
   // ─── Search ───────────────────────────────────────────────────────────────
 
   /**
    * Select cabin class in ITA Matrix form.
    * ITA uses a mat-select dropdown near the top of the form.
-   * Returns { ok, via, attempted, selectedText } for debugging.
    */
   async function selectCabin(cabin) {
     if (!cabin || cabin === 'economy') return { skipped: true };
 
     const cabinLabels = {
-      business: ['Business', 'Business Class'],
-      first:    ['First', 'First Class'],
+      business: ['Business', 'Business Class', 'Business class'],
+      first:    ['First', 'First Class', 'First class'],
       premium:  ['Premium Economy', 'Premium'],
+      premium_economy: ['Premium Economy', 'Premium'],
     };
     const targets = cabinLabels[cabin.toLowerCase()] || [cabin];
 
-    // Try up to 2 times (first attempt may race with Angular rendering)
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt > 0) await sleep(800);
+      if (attempt > 0) await sleep(1000);
 
-      // Strategy 1: mat-select dropdown
-      const selects = qsAll('mat-select');
+      // Strategy 1: mat-select (covers both legacy mat-select and new mat-mdc-select)
+      const selects = qsAll('mat-select, .mat-mdc-select');
       for (const sel of selects) {
         const label = (sel.getAttribute('aria-label') || '').toLowerCase();
-        const value = (sel.querySelector('.mat-select-value-text, .mat-mdc-select-value-text, .mat-select-min-line')?.textContent || '').toLowerCase();
-        if (/cabin|class|economy|business|first|coach|cheapest/i.test(label + ' ' + value)) {
+        const valueText = (sel.querySelector('.mat-select-value-text, .mat-mdc-select-value-text, .mat-select-min-line')?.textContent || '').toLowerCase();
+        
+        // Identify cabin select by label or current value (e.g. "Coach")
+        if (/cabin|class/i.test(label) || /coach|economy|business|first|cheapest/i.test(valueText)) {
           sel.click();
-          await sleep(800); // wait for dropdown animation
-          const options = qsAll('mat-option');
+          await sleep(1000); // Wait for overlay animation
+          
+          const options = qsAll('mat-option, .mat-mdc-option');
           const target = options.find(o =>
             targets.some(t => o.textContent.trim().toLowerCase().includes(t.toLowerCase()))
           );
+          
           if (target) {
             const selectedText = target.textContent.trim();
             target.click();
-            await sleep(500);
+            await sleep(1000); // Wait for Angular to update model
             return { ok: true, via: 'mat-select', attempt, selectedText };
           }
-          // Close dropdown and try next strategy
-          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-          await sleep(300);
-        }
-      }
-
-      // Strategy 2: mat-button-toggle-group
-      const toggleGroups = qsAll('mat-button-toggle-group');
-      for (const group of toggleGroups) {
-        const btns = qsAll('mat-button-toggle', group);
-        const target = btns.find(b =>
-          targets.some(t => b.textContent.trim().toLowerCase().includes(t.toLowerCase()))
-        );
-        if (target) {
-          target.click();
-          await sleep(400);
-          return { ok: true, via: 'toggle', attempt, selectedText: target.textContent.trim() };
+          // Close dropdown if target not found
+          document.body.click(); 
+          await sleep(500);
         }
       }
     }
+    return { ok: false, attempted: cabin };
+  }
 
-    // Debug info on failure
-    const selectDebug = qsAll('mat-select').map(sel => ({
-      ariaLabel: sel.getAttribute('aria-label'),
-      value: sel.querySelector('.mat-select-value-text, .mat-mdc-select-value-text, .mat-select-min-line')?.textContent?.trim(),
-    }));
-    const toggleDebug = qsAll('mat-button-toggle-group').map(g => ({
-      buttons: qsAll('mat-button-toggle', g).map(b => b.textContent.trim())
-    }));
-    return { ok: false, attempted: cabin, selectDebug, toggleDebug };
+  /**
+   * Find all mat-form-field elements whose label matches "Date".
+   */
+  function findDateFormFields() {
+    return qsAll('mat-form-field').filter(f => {
+      const label = qs('mat-label, label, .mat-mdc-form-field-label', f);
+      return label && /^date\*?$/i.test(label.textContent.trim());
+    });
   }
 
   /**
@@ -208,18 +238,6 @@
   function toITADate(isoDate) {
     const [y, m, d] = isoDate.split('-');
     return `${m}/${d}/${y}`;
-  }
-
-  /**
-   * Find all mat-form-field elements whose label matches "Date".
-   * Returns one per leg in document order.
-   */
-  function findDateFormFields() {
-    return qsAll('mat-form-field').filter(f => {
-      const label = qs('mat-label, label', f);
-      // Match "Date" or "Date*" exactly — NOT "Date options" or other compound labels
-      return label && /^date\*?$/i.test(label.textContent.trim());
-    });
   }
 
   /**
@@ -524,6 +542,10 @@
   // ─── Scrape ───────────────────────────────────────────────────────────────
 
   function scrape(hasData = true) {
+    if (detectError()) {
+      return { status: 'error', fares: [], url: location.href, scraped_at: new Date().toISOString() };
+    }
+
     if (!hasData && !hasResults()) {
       return { status: 'no_results', fares: [], url: location.href, scraped_at: new Date().toISOString() };
     }

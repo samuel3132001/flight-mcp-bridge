@@ -23,6 +23,7 @@
   const FLIGHT_ROW_SELECTORS = [
     '.sMnRwf',   // current (2026)
     'li[data-ved]',
+    '[role="listitem"][jsname="I67f9p"]',
     '[role="listitem"]',
     '[jscontroller][data-ved]',
     '.pIav2d',
@@ -34,6 +35,7 @@
     '[data-gs]',
     '[aria-label*="$"]',
     '[aria-label*="NT$"]',
+    '[jsname="V867re"]',
     '.YMlIz',
     '.priceText',
     '.gws-flights-results__itinerary-price',
@@ -42,6 +44,7 @@
 
   const AIRLINE_SELECTORS = [
     '.Ir0Voe .sSHqwe',
+    '[jsname="K90p6"]',
     '[data-airline]',
     '.h1fkLb',
     '.carrier-name',
@@ -85,27 +88,45 @@
     const body = document.body.innerText || '';
     if (/something went wrong|try again later|error occurred/i.test(body)) return true;
     if (document.querySelector('[data-ved] [data-error]')) return true;
+    // Check for "No flights found" text
+    if (/沒有找到航班|No flights found|未找到符合條件的航班/i.test(body) && body.length < 5000) return true;
     return false;
   }
 
   // ─── Wait for Results ─────────────────────────────────────────────────────
 
-  function waitForResults(timeoutMs = 30000) {
+  /**
+   * Wait for results with a stability check.
+   * Ensures results have appeared AND haven't changed for 500ms.
+   */
+  function waitForResults(timeoutMs = 30000, stabilityMs = 500) {
     return new Promise((resolve) => {
-      if (hasResults()) return resolve(true);
+      if (hasResults()) {
+        let stabilityTimer = setTimeout(() => resolve(true), stabilityMs);
+        const stabilityObserver = new MutationObserver(() => {
+          clearTimeout(stabilityTimer);
+          stabilityTimer = setTimeout(() => {
+            stabilityObserver.disconnect();
+            resolve(true);
+          }, stabilityMs);
+        });
+        stabilityObserver.observe(document.body, { childList: true, subtree: true });
+        return;
+      }
 
       const observer = new MutationObserver(() => {
         if (hasResults()) {
           observer.disconnect();
-          clearTimeout(timer);
-          resolve(true);
+          clearTimeout(timeoutTimer);
+          // Wait for stability
+          waitForResults(10000, stabilityMs).then(resolve);
         }
       });
       observer.observe(document.body, { childList: true, subtree: true });
 
-      const timer = setTimeout(() => {
+      const timeoutTimer = setTimeout(() => {
         observer.disconnect();
-        resolve(false); // Resolve anyway — scrape whatever is there
+        resolve(hasResults());
       }, timeoutMs);
     });
   }
@@ -375,28 +396,47 @@
     if (cell?.offsetParent) { (cell.querySelector('span') || cell).click(); await sleep(500); return true; }
 
     // Strategy 2: aria-label containing the date string or "N日"
-    const day = parseInt(isoDate.split('-')[2], 10);
-    const month = parseInt(isoDate.split('-')[1], 10);
+    const [year, month, day] = isoDate.split('-').map(Number);
+    const dayStr = String(day);
+    const monthStr = String(month);
+
     const candidates = Array.from(document.querySelectorAll(
       '[role="gridcell"], [role="button"][data-iso], td[data-date], li[data-date]'
     ));
+
     for (const c of candidates) {
-      const label = c.getAttribute('aria-label') || c.getAttribute('data-date') || '';
+      const label = (c.getAttribute('aria-label') || c.getAttribute('data-date') || '').toLowerCase();
       const iso   = c.getAttribute('data-iso') || '';
-      if ((iso === isoDate) ||
-          (label.includes(isoDate)) ||
-          (label.includes(`${month}月`) && label.includes(`${day}日`))) {
+
+      if (iso === isoDate) {
         if (c.offsetParent && !c.getAttribute('aria-disabled')) {
           (c.querySelector('span') || c).click();
           await sleep(500);
           return true;
         }
       }
+
+      // Check for various language formats: "April 5, 2026", "2026年4月5日", "4月5日"
+      const hasMonth = label.includes(monthStr + '月') || label.includes(monthStr + '/') ||
+                       /jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/i.test(label);
+      const hasDay = label.includes(dayStr + '日') || label.includes(' ' + dayStr + ',') ||
+                     label.endsWith(' ' + dayStr) || label.includes('/' + dayStr + '/');
+
+      if (hasMonth && hasDay) {
+        const dayMatch = label.match(/\d+/);
+        if (dayMatch && dayMatch[0] === dayStr) {
+          if (c.offsetParent && !c.getAttribute('aria-disabled')) {
+            c.click();
+            await sleep(500);
+            return true;
+          }
+        }
+      }
     }
 
     // Strategy 3: find gridcell whose visible text is exactly the day number
     for (const c of Array.from(document.querySelectorAll('[role="gridcell"]'))) {
-      if (c.textContent.trim() === String(day) && c.offsetParent && !c.getAttribute('aria-disabled')) {
+      if (c.textContent.trim() === dayStr && c.offsetParent && !c.getAttribute('aria-disabled')) {
         c.click();
         await sleep(500);
         return true;
@@ -539,14 +579,109 @@
     }
     await sleep(2000);
 
-    // Step 7: Wait for results — also wait an extra 3 s for SPA to settle
-    await sleep(3000);
-    const found = await waitForResults(45000);
+    // Step 7: Wait for page to settle
+    await sleep(2500);
+
+    // Step 8: Ensure cabin matches (Safety net if Protobuf URL failed)
+    // Run this BEFORE the final results wait to ensure we scrape the right class
+    if (params.cabin && params.cabin !== 'economy') {
+      console.log(`[gf] Ensuring cabin: ${params.cabin}`);
+      const cabinOk = await ensureCabin(params.cabin);
+      steps.push({ step: 'ensure_cabin', cabin: params.cabin, ok: cabinOk });
+      if (cabinOk) {
+        await sleep(1500);
+        await waitForResults(30000);
+      }
+    }
+
+    const found = await waitForResults(30000);
     steps.push({ step: 'wait_results', found });
 
     const result = scrape();
     result.steps = steps;
     return result;
+  }
+
+  /**
+   * Safety net: check if currently selected cabin matches requested cabin.
+   * If not, click and select the correct one.
+   */
+  async function ensureCabin(targetCabin) {
+    const cabinMap = {
+      economy: ['經濟艙', 'Economy', 'Coach'],
+      premium_economy: ['豪華經濟艙', 'Premium Economy'],
+      business: ['商務艙', 'Business'],
+      first: ['頭等艙', 'First']
+    };
+    const targets = cabinMap[targetCabin.toLowerCase()] || [targetCabin];
+    const allCabinNames = Object.values(cabinMap).flat();
+
+    console.log(`[gf] Searching for cabin button to match: ${targets.join('/')}`);
+
+    // Strategy 1: Find all elements that look like a dropdown/menu
+    const potentialButtons = Array.from(document.querySelectorAll('button, [role="button"], [aria-haspopup="true"], [aria-haspopup="listbox"], [jsname="VfPpkd-LgbsSe"]'));
+    
+    let cabinBtn = potentialButtons.find(el => {
+      if (el.offsetParent === null) return false;
+      const text = el.innerText.trim();
+      // Look for a button that strictly contains a cabin name
+      return allCabinNames.some(name => text === name || text.includes(name)) && 
+             (text.length < 20); // Avoid large containers that happen to contain the word
+    });
+
+    // Strategy 2: Find by proximity to passenger count (the button with "1 位" or "2 passengers")
+    if (!cabinBtn) {
+      const paxBtn = potentialButtons.find(el => 
+        el.offsetParent !== null && /(\d+)\s*(?:位|passenger|大人|adult)/i.test(el.innerText)
+      );
+      if (paxBtn) {
+        // Look at siblings or parent's siblings
+        let next = paxBtn.nextElementSibling;
+        if (!next) next = paxBtn.parentElement.nextElementSibling;
+        if (next && allCabinNames.some(name => next.innerText.includes(name))) {
+          cabinBtn = next;
+        }
+      }
+    }
+
+    if (!cabinBtn) {
+      console.log('[gf] Could not locate cabin button');
+      return false;
+    }
+
+    const currentText = cabinBtn.innerText.trim();
+    console.log(`[gf] Found cabin button with text: "${currentText}"`);
+    
+    if (targets.some(t => currentText.includes(t))) {
+      console.log('[gf] Cabin is already correct');
+      return true;
+    }
+
+    // Try multiple click strategies
+    console.log('[gf] Attempting to open cabin menu...');
+    cabinBtn.click();
+    // Also dispatch mousedown as a backup
+    cabinBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    await sleep(1200);
+
+    // Find the option in the listbox
+    const options = Array.from(document.querySelectorAll('[role="option"], [role="menuitem"], .VfPpkd-StrEme-OWXEXe-mYmUPf'));
+    console.log(`[gf] Found ${options.length} potential options in menu`);
+    
+    const targetOpt = options.find(o => 
+      targets.some(t => o.innerText.trim().includes(t))
+    );
+
+    if (targetOpt) {
+      console.log(`[gf] Selecting: ${targetOpt.innerText.trim()}`);
+      targetOpt.click();
+      await sleep(2000); // Wait for results to update
+      return true;
+    }
+
+    console.log('[gf] Could not find the target cabin option in the menu');
+    document.body.click(); // Close menu if stuck
+    return false;
   }
 
   function sleep(ms) {
