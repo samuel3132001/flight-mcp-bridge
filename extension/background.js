@@ -299,7 +299,7 @@ async function dispatchToITAMatrix(action, params) {
     else { tab = tabs[0]; const tabInfo = await chrome.tabs.get(tab.id); if (!tabInfo.url.includes('matrix.itasoftware.com/search') || tabInfo.url.includes('flights')) { await chrome.tabs.update(tab.id, { url: ITA_URL, active: true }); await waitForTabLoad(tab.id, 20000); } else { await chrome.tabs.update(tab.id, { active: true }); } }
     await waitForITAFormReady(tab.id, 15000);
     await ensureContentScript(tab.id, 'content-ita.js');
-    return await sendToContentScript(tab.id, { action: 'search', source: 'ita-matrix', params }, 82000);
+    return await sendToContentScript(tab.id, { action: 'search', source: 'ita-matrix', params }, 140000);
   }
   if (action === 'scrape') {
     if (tabs.length === 0) return { error: 'No ITA Matrix tab found. Run search_ita first.' };
@@ -333,7 +333,7 @@ async function dispatchToITAMulticity(legs, passengers = 1, cabin = 'economy') {
   await waitForTabLoad(tab.id, 20000);
   await waitForITAFormReady(tab.id, 15000);
   await ensureContentScript(tab.id, 'content-ita.js');
-  return await sendToContentScript(tab.id, { action: 'search', source: 'ita-matrix', params: { legs, passengers, cabin } }, 82000);
+  return await sendToContentScript(tab.id, { action: 'search', source: 'ita-matrix', params: { legs, passengers, cabin } }, 140000);
 }
 
 // ─── Content Script Utilities ─────────────────────────────────────────────────

@@ -143,17 +143,24 @@
 
   function hasResults() {
     const RESULT_SELECTORS = [
+      '.mat-row',
+      '.mat-mdc-row',
       '[role="grid"] tr',
       '.matrix-results-table tr',
       'table[class*="results"] tr',
       'table tr td[class*="price"]',
       '[class*="itinerary"]',
+      '.itinerary-container',
+      '.fare-row'
     ];
     for (const s of RESULT_SELECTORS) {
       if (qsAll(s).length >= 2) return true;
     }
+    const bodyText = document.body.innerText;
     const pricePattern = /(?:USD|TWD|JPY|NT\$|¥|\$)\s*[\d,]{2,}/;
-    return pricePattern.test(document.body.innerText);
+    // Also look for just the currency code and a number
+    const alternativePricePattern = /\b(?:USD|TWD|JPY|EUR)\b\s*[\d,]{2,}/;
+    return pricePattern.test(bodyText) || alternativePricePattern.test(bodyText);
   }
 
   function detectError() {
@@ -278,6 +285,7 @@
   }
 
   async function searchMultiCity(legs, cabin) {
+    const t0 = Date.now();
     const steps = [];
 
     // Step 1: Click Multi-City tab
@@ -399,15 +407,23 @@
     searchBtn.click();
 
     await sleep(2000);
-    const found = await waitForResults(30000);
+    const elapsed = Date.now() - t0;
+    const waitBudget = Math.max(128000 - elapsed - 7000, 15000);
+    const found = await waitForResults(waitBudget);
     steps.push({ step: 'wait_results', found });
 
-    const result = scrape(found);
+    let result = scrape(found);
+    if (result.status === 'no_results' || result.status === 'error') {
+      await sleep(5000);
+      result = scrape(hasResults());
+      result._retried = true;
+    }
     result.steps = steps;
     return result;
   }
 
   async function search(params) {
+    const t0 = Date.now();
     const { origin, destination, departure_date, return_date, passengers = 1, cabin } = params;
 
     // Multi-city path
@@ -529,12 +545,19 @@
 
     searchBtn.click();
 
-    // Step 8: Wait for results (budget: ~50s to stay within 82s total)
+    // Step 8: Wait for results — use remaining time budget
     await sleep(2000);
-    const found = await waitForResults(48000);
+    const elapsed = Date.now() - t0;
+    const waitBudget = Math.max(128000 - elapsed - 7000, 15000);
+    const found = await waitForResults(waitBudget);
     steps.push({ step: 'wait_results', found });
 
-    const result = scrape(found);
+    let result = scrape(found);
+    if (result.status === 'no_results' || result.status === 'error') {
+      await sleep(5000);
+      result = scrape(hasResults());
+      result._retried = true;
+    }
     result.steps = steps;
     return result;
   }
@@ -542,26 +565,39 @@
   // ─── Scrape ───────────────────────────────────────────────────────────────
 
   function scrape(hasData = true) {
+    const bodyText = document.body.innerText;
+    const _debug = {
+      url: location.href,
+      innerTextLen: bodyText.length,
+      hasResultsNow: hasResults(),
+      hasDataArg: hasData,
+    };
+
     if (detectError()) {
-      return { status: 'error', fares: [], url: location.href, scraped_at: new Date().toISOString() };
+      return { status: 'error', fares: [], url: location.href, scraped_at: new Date().toISOString(), _debug };
     }
 
-    if (!hasData && !hasResults()) {
-      return { status: 'no_results', fares: [], url: location.href, scraped_at: new Date().toISOString() };
+    if (!hasData && !_debug.hasResultsNow) {
+      return { status: 'no_results', fares: [], url: location.href, scraped_at: new Date().toISOString(), _debug };
     }
 
-    const fares = [];
+    let fares = [];
 
-    // Strategy 1: Grid/table rows
-    const gridRows = qsAll('[role="grid"] tr, [role="row"], table tr');
-    for (const row of gridRows) {
-      const fare = extractFare(row);
-      if (fare && fare.price) fares.push(fare);
+    // Strategy 1: Grid/table rows (Material Design & Legacy)
+    const rowSelectors = ['.mat-row', '.mat-mdc-row', '[role="grid"] tr', '[role="row"]', '.matrix-results-table tr'];
+    for (const sel of rowSelectors) {
+      const rows = qsAll(sel);
+      for (const row of rows) {
+        const fare = extractFare(row);
+        if (fare && fare.price) fares.push(fare);
+      }
+      if (fares.length > 5) break;
     }
+    _debug.strategy1Hits = fares.length;
 
     // Strategy 2: Itinerary containers
     if (fares.length === 0) {
-      const containers = qsAll('[class*="itinerary"], [class*="result"], [class*="fare"]');
+      const containers = qsAll('[class*="itinerary"], [class*="result"], [class*="fare"], .itinerary-container');
       for (const c of containers) {
         const fare = extractFare(c);
         if (fare && fare.price) fares.push(fare);
@@ -571,69 +607,95 @@
     // Strategy 3: Text pattern scan as last resort
     if (fares.length === 0) {
       const pricePattern = /(?:USD|TWD|JPY|NT\$|¥|\$)\s*([\d,]+)/g;
-      const bodyText = document.body.innerText;
       let m;
       const prices = [];
       while ((m = pricePattern.exec(bodyText)) !== null) {
         prices.push(m[0].trim());
       }
+      _debug.strategy3Prices = prices.length;
       if (prices.length > 0) {
-        return {
-          status: 'ok',
-          fares: prices.map((p) => ({ price: p, note: 'text-pattern-scan' })),
-          url: location.href,
-          scraped_at: new Date().toISOString(),
-          _warning: 'Structured scraping failed; prices extracted via text pattern'
-        };
+        const uniquePrices = Array.from(new Set(prices)).filter(p => p.replace(/[^\d]/g, '').length >= 3);
+        if (uniquePrices.length > 0) {
+          return {
+            status: 'ok',
+            fares: uniquePrices.map((p) => ({ price: p, note: 'text-pattern-scan' })),
+            url: location.href,
+            scraped_at: new Date().toISOString(),
+            _warning: 'Structured scraping failed; prices extracted via text pattern',
+            _debug
+          };
+        }
       }
     }
 
+    // Deduplicate fares by price and time
+    const seen = new Set();
+    const finalFares = fares.filter(f => {
+      const key = `${f.price}-${f.departure_time}-${f.airline}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
     return {
-      status: fares.length > 0 ? 'ok' : 'no_results',
-      fares,
-      count: fares.length,
+      status: finalFares.length > 0 ? 'ok' : 'no_results',
+      fares: finalFares,
+      count: finalFares.length,
       url: location.href,
-      scraped_at: new Date().toISOString()
+      scraped_at: new Date().toISOString(),
+      _debug
     };
   }
 
   function extractFare(row) {
-    const text = row.textContent;
-    if (!text.trim()) return null;
+    const text = row.textContent || '';
+    if (!text.trim() || text.length < 20) return null; 
 
-    const priceMatch = text.match(/(?:USD|TWD|JPY|NT\$|¥|\$)\s*([\d,]+)/);
+    // Price
+    const priceMatch = text.match(/(?:USD|TWD|JPY|NT\$|¥|\$)\s*[\d,]+/);
     const price = priceMatch ? priceMatch[0].trim() : null;
+    if (!price) return null;
 
+    // Routing
     const routeMatch = text.match(/([A-Z]{3})\s*[–\-→]\s*([A-Z]{3})/);
     const routing = routeMatch ? routeMatch[0] : null;
 
-    const fareClassMatch = text.match(/\b([A-Z]\d?)\s+(?:class|fare)\b/i);
-    const fare_class = fareClassMatch ? fareClassMatch[1] : null;
+    // Airline
+    let airline = null;
+    const carrierEl = qs('[class*="airline"], [class*="carrier"], .carrier-text', row);
+    if (carrierEl) {
+      airline = carrierEl.textContent.trim();
+    } else {
+      const airlineMatch = text.match(/(?:^|\n)\s*([A-Za-z\s]{3,20})(?:\s+\d{1,2}:\d{2})/);
+      if (airlineMatch) airline = airlineMatch[1].trim();
+    }
 
-    const airlineEl = qs('[class*="airline"], [class*="carrier"]', row);
-    const airline = airlineEl ? airlineEl.textContent.trim() : null;
-
+    // Times
+    const timePattern = /\d{1,2}:\d{2}(?:\s*[AP]M)?/gi;
+    const times = text.match(timePattern) || [];
+    
+    // Duration
     const durationMatch = text.match(/(\d+)h\s*(\d+)?m|(\d+)\s*hr?\s*(\d+)?\s*min?/i);
     const duration = durationMatch ? durationMatch[0].trim() : null;
 
-    const stopsMatch = text.match(/nonstop|(\d+)\s*stop/i);
+    // Stops
     let stops = null;
-    if (stopsMatch) {
-      stops = stopsMatch[0].toLowerCase().includes('nonstop') ? 0 : parseInt(stopsMatch[1], 10);
+    const stopsText = text.toLowerCase();
+    if (stopsText.includes('nonstop') || stopsText.includes('直達')) {
+      stops = 0;
+    } else {
+      const sm = text.match(/(\d+)\s*(?:stop|站)/i);
+      if (sm) stops = parseInt(sm[1], 10);
     }
-
-    const timePattern = /\b\d{1,2}:\d{2}(?:\s*[AP]M)?\b/gi;
-    const times = (text.match(timePattern) || []).slice(0, 2);
 
     return {
       price,
       routing,
-      fare_class,
       airline,
       duration,
-      stops,
       departure_time: times[0] || null,
-      arrival_time: times[1] || null
+      arrival_time: times[1] || null,
+      stops
     };
   }
 

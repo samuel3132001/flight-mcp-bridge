@@ -16,7 +16,7 @@ const { randomUUID } = require('crypto');
 
 const WS_PORT   = 9223;
 const SSE_PORT  = 3000;
-const TOOL_TIMEOUT_MS = 90_000;
+const TOOL_TIMEOUT_MS = 150_000;
 
 const TOOLS = [
   {
